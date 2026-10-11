@@ -983,14 +983,21 @@ static long mono_ms(void) {
 
 /* 等与 expected（C 以来发送的全部字母）一致的候选并返回其 iterator。
  * 引擎按搜索完成顺序回调，旧输入的候选可能先到：释放它们并继续等；长批量输入
- * 在两次搜索之间可能静默数百毫秒，所以已知输入只以 timeout_ms 为限。
- * expected 为空（部分选词后剩余串未知）时，最后一次回调后 quiet_ms 内无新回调
- * 即退回最新候选。超时退回最新候选，仍无回调返回 0。 */
+ * 在两次搜索之间可能静默数百毫秒。已知回调与 expected 不符时允许按 quiet_ms
+ * 静默窗回退（启发式：不能区分纠错与迟到的旧输入）；精确命中仍立即返回。
+ * expected 为空（部分选词后剩余串未知）时保留原有 300ms 静默窗。
+ * 超时退回最新候选，仍无回调返回 0。 */
 static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
                              void *sym_dci, int *exact) {
     const long t0 = mono_ms();
+    if (!*expected) quiet_ms = 300;  /* unknown-input 路径不受纠错调优影响 */
     long best = 0, last_event = 0;
     int skipped = 0;
+    /* 纠错（乱序/键邻等增广器）会改写引擎的 PendingInput.match（合并/重分段），
+     * 使其与原始键序不再一致——此时精确匹配永远无法命中，若不吃满 timeout
+     * 就只能等。一旦某个已知输入的候选与 expected 不符，改用「回调安静
+     * quiet_ms 即视为当前输入候选已就绪」的判定，避免每键白等 2.5s。 */
+    int exact_possible = 1;
     *exact = 0;
     pthread_mutex_lock(&g_cand_mu);
     for (;;) {
@@ -1004,6 +1011,7 @@ static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
                 if (best) { daemon_free_it(sym_dci, best); skipped++; }
                 best = evs[i].it;
                 *exact = evs[i].known && !strcmp(evs[i].input, expected);
+                if (*expected && evs[i].known && !*exact) exact_possible = 0;
                 if (!*exact)
                     fprintf(stderr, "[daemon] candidate event input_len=%d known=%d sent_len=%zu (not current)\n",
                             evs[i].known ? (int)strlen(evs[i].input) : -1, evs[i].known, strlen(expected));
@@ -1015,7 +1023,8 @@ static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
         }
         const long now = mono_ms();
         long until = t0 + timeout_ms;
-        if (best && !*expected && last_event + quiet_ms < until) until = last_event + quiet_ms;
+        if (best && (!*expected || !exact_possible) && last_event + quiet_ms < until)
+            until = last_event + quiet_ms;
         if (now >= until) { pthread_mutex_unlock(&g_cand_mu); break; }
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -1139,6 +1148,21 @@ static void run_daemon(void *h, long sid) {
     size_t sent_n = 0;
     int sent_known = 1;     /* 0: 部分选词或超长后无法与 PendingInput 对齐 */
     int spans = 0;          /* OPT spans: 候选带覆盖长度，S 部分选词回复剩余候选 */
+    /* 纠错改写 match 串后的回调静默窗（毫秒）：引擎停止发新候选即发货。
+     * 越小打字越跟手，越小越容易错发次优候选（下一键修正）。 */
+    int quiet_ms = 150;
+    {
+        const char *e = getenv("WETYPE_QUIET_MS");
+        if (e && *e) {
+            char *end;
+            errno = 0;
+            long value = strtol(e, &end, 10);
+            if (!errno && end != e && !*end && value >= 1 && value <= 2500)
+                quiet_ms = (int)value;
+            else
+                fprintf(stderr, "[daemon] invalid WETYPE_QUIET_MS (expected 1..2500); using 150ms\n");
+        }
+    }
     proto_printf("READY\n");
     while (cmd_read(line, sizeof line, 1)) {
         size_t L = strlen(line);
@@ -1209,7 +1233,7 @@ static void run_daemon(void *h, long sid) {
             }
 
             int exact = 0;
-            long it = daemon_wait_cand(sent_known ? sent : "", 2500, 300, sym_dci, &exact);
+            long it = daemon_wait_cand(sent_known ? sent : "", 2500, quiet_ms, sym_dci, &exact);
             int got = it ? daemon_fetch_cands(sym_cg, sym_dci, it) : -1;
             fprintf(stderr, "[daemon] input batch chars=%zu composition_len=%zu callbacks=%lu exact=%d iterator=%#lx candidates=%d\n",
                     strlen(keys), sent_n, g_cand_callback_count, exact, it, got);
@@ -1244,7 +1268,7 @@ static void run_daemon(void *h, long sid) {
             sent_n -= (size_t)cover;
             memmove(sent, sent + cover, sent_n + 1);
             int exact = 0;
-            long it = daemon_wait_cand(sent, 2500, 300, sym_dci, &exact);
+            long it = daemon_wait_cand(sent, 2500, quiet_ms, sym_dci, &exact);
             int got = it ? daemon_fetch_cands(sym_cg, sym_dci, it) : -1;
             fprintf(stderr, "[daemon] partial select cover=%d rest_len=%zu exact=%d candidates=%d\n",
                     cover, sent_n, exact, got);
