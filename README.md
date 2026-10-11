@@ -14,6 +14,7 @@
 |---|---|---|
 | 键盘拼音输入、中文候选 | 支持 | 候选由 WeType 3.5.4 引擎产生 |
 | 拼音纠错（乱序、键邻、漏字等容错候选） | 支持 | 会话配置按官方客户端默认值传入（enable_local_correction 与 InputAugmenter 的 exchange/keyboard_neighbour/insert_at_middle/skip） |
+| emoji/颜文字候选 | 支持 | 按官方默认开启（local_most_likely_config / local_process_input_config 的 emoji 开关） |
 | 数字、空格、鼠标选词及部分选词 | 支持 | 部分选词后可继续选择剩余拼音的候选 |
 | 候选翻页、全局候选数量 | 支持 | 每页 1–10 个，跟随 Fcitx5 全局配置；第 10 个用 `0` 选择 |
 | 本地选词学习及持久化 | 支持 | 学习数据保存在本机；重启后可复用 |
