@@ -790,6 +790,73 @@ static void build_env(void) {
 }
 
 static JObj g_sesscfg;   /* daemon 重建会话复用 */
+/* 嵌套配置对象：结构与默认值取自 APK 的 com/tencent/wxhld/info/SessionConfig（3.5.4）。
+ * 真实 app 由 Java 构造函数填好默认值；这里若缺失，胶水层 auto-complete 会给全 0
+ * 的空对象——其中 InputAugmenter 的 enable_exchange（相邻字母乱序纠错）等五个
+ * 纠错开关默认应为 true，全 0 会导致引擎关闭全部纠错（乱序输入无法纠错）。 */
+static JObj g_wubicfg, g_aug, g_lml, g_lpi, g_cml, g_cpi, g_crec, g_ctr, g_crd, g_cec, g_gsi;
+static void build_sesscfg_nested(void) {
+    /* WubiConfig{ enable_comment=true, 其余 false } */
+    memset(&g_wubicfg, 0, sizeof g_wubicfg);
+    g_wubicfg.cls = "com/tencent/wxhld/info/SessionConfig$WubiConfig";
+    obj_set(&g_wubicfg, "enable_comment", 'z', (void *)1);
+    /* InputAugmenter{ exchange/keyboard_neighbour/insert_at_middle/skip=true（Java 默认，
+     * app 的 ime_fault_* 设置默认 true 时不再覆盖），shift_key=false（app 的 h5() 总是显式置 false），
+     * 模糊音对全 false, double_pin_solution=0(DISABLED) } —— enable_exchange 即乱序纠错 */
+    memset(&g_aug, 0, sizeof g_aug);
+    g_aug.cls = "com/tencent/wxhld/info/SessionConfig$InputAugmenter";
+    obj_set(&g_aug, "wubi_config", 'o', &g_wubicfg);
+    /* app 侧 h5() 显式置 false（Java 类默认 true，但总会被覆盖） */
+    obj_set(&g_aug, "enable_shift_key_correction", 'z', (void *)0);
+    obj_set(&g_aug, "enable_exchange", 'z', (void *)1);
+    obj_set(&g_aug, "enable_keyboard_neighbour", 'z', (void *)1);
+    obj_set(&g_aug, "enable_insert_at_middle", 'z', (void *)1);
+    obj_set(&g_aug, "enable_skip", 'z', (void *)1);
+    obj_set(&g_aug, "double_pin_solution", 'i', (void *)0);
+    /* LocalMostLikelyConfig{ emoji/text 相关 true } */
+    memset(&g_lml, 0, sizeof g_lml);
+    g_lml.cls = "com/tencent/wxhld/info/SessionConfig$LocalMostLikelyConfig";
+    obj_set(&g_lml, "enable_normal_emoji", 'z', (void *)1);
+    obj_set(&g_lml, "enable_kao_emoji", 'z', (void *)1);
+    obj_set(&g_lml, "enable_normal_text", 'z', (void *)1);
+    obj_set(&g_lml, "enable_easter_egg", 'z', (void *)1);
+    obj_set(&g_lml, "enable_easter_egg_sent_out_candidate", 'z', (void *)1);
+    obj_set(&g_lml, "enable_most_likely_filter", 'z', (void *)1);
+    /* LocalProcessInputConfig{ emoji_in_user_dict/symbol_emoji 等 true } */
+    memset(&g_lpi, 0, sizeof g_lpi);
+    g_lpi.cls = "com/tencent/wxhld/info/SessionConfig$LocalProcessInputConfig";
+    obj_set(&g_lpi, "enable_normal_emoji", 'z', (void *)1);
+    obj_set(&g_lpi, "enable_kao_emoji", 'z', (void *)1);
+    obj_set(&g_lpi, "enable_emoji_in_user_dict", 'z', (void *)1);
+    obj_set(&g_lpi, "enable_symbol_emoji", 'z', (void *)1);
+    /* CloudEngineConfig 及其嵌套（无云端接入，默认即关闭，只给结构与非零默认值） */
+    memset(&g_cml, 0, sizeof g_cml);
+    g_cml.cls = "com/tencent/wxhld/info/SessionConfig$CloudMostLikelyConfig";
+    obj_set(&g_cml, "enable_normal_emoji", 'z', (void *)1);
+    obj_set(&g_cml, "enable_kao_emoji", 'z', (void *)1);
+    obj_set(&g_cml, "enable_baike", 'z', (void *)1);
+    obj_set(&g_cml, "enable_normal_text", 'z', (void *)1);
+    obj_set(&g_cml, "enable_easter_egg", 'z', (void *)1);
+    memset(&g_cpi, 0, sizeof g_cpi);
+    g_cpi.cls = "com/tencent/wxhld/info/SessionConfig$CloudProcessInputConfig";
+    obj_set(&g_cpi, "return_cnt", 'i', (void *)3);
+    memset(&g_crec, 0, sizeof g_crec);
+    g_crec.cls = "com/tencent/wxhld/info/SessionConfig$CloudRecommendConfig";
+    memset(&g_ctr, 0, sizeof g_ctr);
+    g_ctr.cls = "com/tencent/wxhld/info/SessionConfig$CloudTextRewriteConfig";
+    memset(&g_crd, 0, sizeof g_crd);
+    g_crd.cls = "com/tencent/wxhld/info/SessionConfig$CloudResourceDisplayConfig";
+    memset(&g_cec, 0, sizeof g_cec);
+    g_cec.cls = "com/tencent/wxhld/info/SessionConfig$CloudEngineConfig";
+    obj_set(&g_cec, "most_likely_config", 'o', &g_cml);
+    obj_set(&g_cec, "process_input_config", 'o', &g_cpi);
+    obj_set(&g_cec, "recommend_config", 'o', &g_crec);
+    obj_set(&g_cec, "text_rewrite_config", 'o', &g_ctr);
+    obj_set(&g_cec, "resource_display_config", 'o', &g_crd);
+    /* GroupSyncInfo：群词库同步信息，引擎只读数值字段，默认全 0 */
+    memset(&g_gsi, 0, sizeof g_gsi);
+    g_gsi.cls = "com/tencent/wxhld/info/SessionConfig$GroupSyncInfo";
+}
 
 /* ---------- daemon：候选缓存与会话管理 ---------- */
 #define MAX_CAND 72
@@ -1368,6 +1435,7 @@ int main(int argc, char **argv) {
     /* 会话链路：让胶水自报 SessionConfig 字段 */
     void *sym_cs = dlsym(h, "_Z14create_sessionP7_JNIEnvP8_jobjectS2_");
     if (sym_cs) {
+        build_sesscfg_nested();
         memset(&g_sesscfg, 0, sizeof g_sesscfg);
         g_sesscfg.cls = "com/tencent/wxhld/info/SessionConfig";
         /* 真实 app 的 SessionConfig 默认值（keyboard_type=0 即拼音） */
@@ -1381,6 +1449,14 @@ int main(int argc, char **argv) {
         obj_set(&g_sesscfg, "enable_pre_input", 'z', (void *)1);
         obj_set(&g_sesscfg, "enable_auto_most_likely", 'z', (void *)1);
         obj_set(&g_sesscfg, "enable_user_hot_word_recommend", 'z', (void *)1);
+        /* app 侧：用户设置 ime_plus_detail_spelling_correct 默认 true → enable_local_correction=true。
+         * 这是本地纠错（含乱序/键邻候选标记）的总开关；缺省为 false 会导致纠错不生效。 */
+        obj_set(&g_sesscfg, "enable_local_correction", 'z', (void *)1);
+        obj_set(&g_sesscfg, "input_augmenter", 'o', &g_aug);
+        obj_set(&g_sesscfg, "local_most_likely_config", 'o', &g_lml);
+        obj_set(&g_sesscfg, "local_process_input_config", 'o', &g_lpi);
+        obj_set(&g_sesscfg, "cloud_engine_config", 'o', &g_cec);
+        obj_set(&g_sesscfg, "group_sync_info", 'o', &g_gsi);
         printf("calling create_session(env, NULL, SessionConfig{app_name=com.tencent.mm,kb=0})...\n");
         fflush(stdout);
         long sid = ((long (*)(void *, void *, void *))sym_cs)(g_env, NULL, &g_sesscfg);
