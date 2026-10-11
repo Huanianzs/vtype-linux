@@ -29,12 +29,12 @@
 
 ## 安装
 
-先安装依赖：
+先安装依赖（下载、校验、解包、补丁都在 python3 标准库内完成，无需 curl/unzip）：
 
 ```sh
-sudo apt install python3 unzip curl          # Debian / Ubuntu
-sudo dnf install python3 unzip curl          # Fedora
-sudo pacman -S --needed python unzip curl    # Arch
+sudo apt install python3                        # Debian / Ubuntu
+sudo dnf install python3                        # Fedora
+sudo pacman -S --needed python                  # Arch
 ```
 
 ARM64 主机还需要 `patchelf`（安装时把 harness 的 ELF 解释器指向包内的 bionic `linker64`，之后原生运行，不改动 `/system`）：

@@ -91,15 +91,13 @@ native=0
 # Check everything up front and print a copy-paste command; never install packages ourselves.
 check_install_deps() {
   local missing=() cmd tool id=
-  for tool in python3 unzip sha256sum; do
+  # 下载/校验/解包/补丁都收敛在 python3 标准库内（fetch_apk.py、10_patch_libs.sh）
+  for tool in python3; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   # Native layout: the harness ELF interpreter is rewritten to the bundled bionic linker.
   if [ "$native" = 1 ]; then
     command -v patchelf >/dev/null 2>&1 || missing+=(patchelf)
-  fi
-  if [ -z "$apk" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-    missing+=(curl)
   fi
   [ "${#missing[@]}" -eq 0 ] && return
 
@@ -108,10 +106,10 @@ check_install_deps() {
     id="$(. /etc/os-release; echo " ${ID:-} ${ID_LIKE:-} ")"
   fi
   case "$id" in
-    *" debian "*|*" ubuntu "*) cmd="sudo apt install python3 unzip curl" ;;
-    *" arch "*) cmd="sudo pacman -S --needed python unzip curl" ;;
-    *" fedora "*|*" rhel "*|*" centos "*) cmd="sudo dnf install python3 unzip curl" ;;
-    *" suse "*|*" opensuse "*) cmd="sudo zypper install python3 unzip curl" ;;
+    *" debian "*|*" ubuntu "*) cmd="sudo apt install python3" ;;
+    *" arch "*) cmd="sudo pacman -S --needed python" ;;
+    *" fedora "*|*" rhel "*|*" centos "*) cmd="sudo dnf install python3" ;;
+    *" suse "*|*" opensuse "*) cmd="sudo zypper install python3" ;;
   esac
   if [ -n "${cmd:-}" ] && [ "$native" = 1 ]; then
     cmd="$cmd patchelf"
@@ -135,7 +133,8 @@ if [ "$action" = install ]; then
     "$src_eng/wetype-harness" "$src_eng/wetype-ime-demo.sh" \
     "$src_eng/lib/libandroid.so" \
     "$src_eng/sysroot/system/bin/linker64" \
-    "$src_scripts/prepare_assets.sh" "$src_scripts/10_patch_libs.sh" \
+    "$src_scripts/prepare_assets.sh" "$src_scripts/fetch_apk.py" \
+    "$src_scripts/10_patch_libs.sh" \
     "$src/lib/fcitx5/libfcitx5-wetype.so" \
     "$src/share/fcitx5/addon/wetype.conf" \
     "$src/share/fcitx5/inputmethod/wetype-im.conf" \
