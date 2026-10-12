@@ -1,5 +1,5 @@
 #pragma once
-// Linux：官方常用语的本地只读缓存。内容不写日志，支持数字编码及换行文本。
+// 官方常用语的本地只读缓存。内容不写日志，支持数字编码及换行文本。
 #include <cstdint>
 #include <algorithm>
 #include <fstream>
@@ -58,6 +58,22 @@ public:
             const bool letters = effective.find_first_not_of("abcdefghijklmnopqrstuvwxyz") == std::string::npos;
             if (letters && effective == code)
                 if (std::find(result.begin(),result.end(),entry.second) == result.end()) result.push_back(entry.second);
+        }
+        return result;
+    }
+    // 数字编码：已输入的数字以编码开头时命中。first 为可保留的已输入位数：
+    // 内容以已输入数字开头时等于其长度（只补后半段），否则为 0（需先删除已输入数字）。
+    std::vector<std::pair<size_t, std::string>> digitLookup(const std::string &typed) {
+        reload(); std::vector<std::pair<size_t, std::string>> result;
+        if (typed.empty()) return result;
+        for (size_t i=0; i<entries_.size(); ++i) {
+            const auto &entry = entries_[i];
+            const auto &effective = entry.first.empty() ? recommendations_[i] : entry.first;
+            if (effective.empty() || effective.find_first_not_of("0123456789") != std::string::npos) continue;
+            if (typed.rfind(effective, 0) != 0) continue;
+            if (entry.second.rfind(typed, 0) == 0) {
+                if (entry.second.size() > typed.size()) result.emplace_back(typed.size(), entry.second);
+            } else if (typed == effective) result.emplace_back(0, entry.second);
         }
         return result;
     }

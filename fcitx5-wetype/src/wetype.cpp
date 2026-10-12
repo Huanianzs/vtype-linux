@@ -445,7 +445,7 @@ struct PunctuationState : InputContextProperty {
     bool lastDigit = false, doubleQuote = false, singleQuote = false;
 };
 struct ModeState : InputContextProperty {
-    bool english=false, shiftSolo=false, ctrlSpaceDown=false;
+    bool english=false, shiftSolo=false;
     KeySym shiftDown=FcitxKey_None;
 };
 
@@ -460,7 +460,7 @@ public:
         }
         if (!instance_->inputContextManager().registerProperty("wetype-mode-state", &modeFactory_))
             throw std::runtime_error("cannot register WeType mode state");
-        // 在 Fcitx 全局中英开关之前处理，仅作用于微信输入法。
+        // 在 Fcitx 全局中英开关之前处理单独轻按的 Shift，仅作用于微信输入法；Ctrl+Space 交给 Fcitx。
         modeWatcher_=instance_->watchEvent(EventType::InputContextKeyEvent,EventWatcherPhase::PreInputMethod,
             [this](Event &event) {
                 auto &key=static_cast<KeyEvent &>(event);
@@ -469,11 +469,6 @@ public:
                 if (!entry || entry->uniqueName()!="wetype-im" || ic->capabilityFlags().test(CapabilityFlag::Password)) return;
                 auto *state=ic->propertyFor(&modeFactory_);
                 const auto symbol=key.key().sym();
-                if (symbol==FcitxKey_space && ((key.isRelease() && state->ctrlSpaceDown) || key.key().check(FcitxKey_space,KeyState::Ctrl))) {
-                    if (!key.isRelease() && !state->ctrlSpaceDown) toggleMode(ic);
-                    state->ctrlSpaceDown=!key.isRelease();state->shiftSolo=false;
-                    key.filterAndAccept();return;
-                }
                 if (symbol==FcitxKey_Shift_L || symbol==FcitxKey_Shift_R) {
                     if (!key.isRelease()) {
                         const bool solo=!key.key().states().testAny(KeyStates{KeyState::Ctrl,KeyState::Alt,KeyState::Super,KeyState::Super2,KeyState::Meta,KeyState::Hyper,KeyState::Mod5});
@@ -564,8 +559,8 @@ public:
         auto *ic = event.inputContext();
         if (!ic) return;
         auto *mode=ic->propertyFor(&modeFactory_);
-        mode->shiftDown=FcitxKey_None;mode->shiftSolo=false;mode->ctrlSpaceDown=false;
-        bool had = !buf_.empty() || !cands_.empty();
+        mode->shiftDown=FcitxKey_None;mode->shiftSolo=false;
+        bool had = !buf_.empty() || !cands_.empty() || !digitHits_.empty();
         eng_.send("SAVE", nullptr);
         clearAll();
         if (had) updateUI(*ic);
@@ -640,6 +635,21 @@ private:
         }
         else if (pending_) panel.setPreedit(Text(pendingRaw()));
         else panel.setPreedit(pinyinPreedit(buf_));
+        if (cands_.empty() && !digitHits_.empty()) {
+            // 数字常用语：已输入的数字照常上屏，回车只补全剩余部分。
+            panel.setAuxUp(Text("常用语 · 回车补全，Esc 关闭"));
+            auto cl = std::make_unique<CommonCandidateList>();
+            cl->setLayoutHint(CandidateLayoutHint::Vertical);
+            for (size_t i = 0; i < digitHits_.size(); ++i) {
+                cl->append<GridColumnCandidate>(Text(digitHits_[i].second),
+                    [this, i, revision=revision_](InputContext *context) {
+                        if (revision == revision_) commitDigitPhrase(context, i);
+                    });
+            }
+            cl->setPageSize(static_cast<int>(digitHits_.size()));
+            cl->setGlobalCursorIndex(digitSelected_);
+            panel.setCandidateList(std::move(cl));
+        }
         if (!cands_.empty()) {
             const int start = windowStart_;
             const int end = std::min<int>(start + pageSize(), cands_.size());
@@ -1119,7 +1129,69 @@ private:
     uint64_t revision_ = 0;
     TrackableObjectReference<InputContext> icRef_;
 
+    // 数字常用语：空闲时连续输入的数字（已上屏）及命中的 (需删除的已输入位数, 常用语全文)。
+    std::string digitRun_;
+    std::vector<std::pair<size_t, std::string>> digitHits_;
+    int digitSelected_ = 0;
+
+    void resetDigitRun(InputContext *ic) {
+        const bool shown = !digitHits_.empty();
+        digitRun_.clear(); digitHits_.clear(); digitSelected_ = 0;
+        if (shown && ic) updateUI(*ic);
+    }
+    void updateDigitPhrases(InputContext *ic) {
+        const bool surrounding = ic->capabilityFlags().test(CapabilityFlag::SurroundingText);
+        digitHits_.clear(); digitSelected_ = 0;
+        for (auto &hit : commonPhrases_.digitLookup(digitRun_)) {
+            // 内容以已输入数字开头时只补后半段；否则需要应用支持删除光标前文字。
+            if (hit.first == 0 && !surrounding) continue;
+            digitHits_.push_back(std::move(hit));
+        }
+        updateUI(*ic);
+    }
+    void commitDigitPhrase(InputContext *ic, size_t index) {
+        if (index >= digitHits_.size()) return;
+        const auto [keep, text] = digitHits_[index];
+        const auto typed = digitRun_.size();
+        resetDigitRun(ic);
+        if (keep == typed) ic->commitString(text.substr(typed));
+        else { ic->deleteSurroundingText(-static_cast<int>(typed), typed); ic->commitString(text); }
+        rememberLanguage(ic, text);
+        ++revision_;
+    }
+    // 返回 true 表示按键已被数字常用语消费。
+    bool digitPhraseKey(KeyEvent &event, InputContext *ic) {
+        const auto sym = event.key().sym();
+        if (event.isRelease()) return false;
+        const bool plain = !event.key().states().testAny(KeyStates{KeyState::Ctrl, KeyState::Alt,
+            KeyState::Super, KeyState::Super2, KeyState::Meta, KeyState::Hyper, KeyState::Hyper2, KeyState::Mod5});
+        if (!buf_.empty() || pending_ || phraseMode_) { resetDigitRun(ic); return false; }
+        if (!digitHits_.empty() && plain) {
+            if (sym == FcitxKey_Return || sym == FcitxKey_KP_Enter) {
+                commitDigitPhrase(ic, digitSelected_); event.filterAndAccept(); return true;
+            }
+            if (sym == FcitxKey_Escape) { resetDigitRun(ic); event.filterAndAccept(); return true; }
+            if ((sym == FcitxKey_Up || sym == FcitxKey_Down) && digitHits_.size() > 1) {
+                const int n = static_cast<int>(digitHits_.size());
+                digitSelected_ = (digitSelected_ + n + (sym == FcitxKey_Down ? 1 : -1)) % n;
+                updateUI(*ic); event.filterAndAccept(); return true;
+            }
+        }
+        int digit = -1;
+        if (sym >= FcitxKey_0 && sym <= FcitxKey_9) digit = sym - FcitxKey_0;
+        else if (sym >= FcitxKey_KP_0 && sym <= FcitxKey_KP_9) digit = sym - FcitxKey_KP_0;
+        if (plain && digit >= 0) {
+            if (digitRun_.size() < 64) digitRun_ += static_cast<char>('0' + digit);
+            updateDigitPhrases(ic);
+            return false;   // 数字本身照常交给应用
+        }
+        if (Key(sym).isModifier()) return false;
+        resetDigitRun(ic);
+        return false;
+    }
+
     void clearAll(InputContext *ic = nullptr) {
+        digitRun_.clear(); digitHits_.clear(); digitSelected_ = 0;
         phraseMode_ = false;
         cancelPending();
         ++epoch_;
@@ -1154,6 +1226,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
     bool handled = false;
     if (icRef_.get() != ic) clearAll();
     icRef_ = ic->watch();
+    if (digitPhraseKey(event, ic)) return;
 
     // 独立常用语模式支持官方数字编码，避免与拼音数字选词发生冲突。
     if (event.key().check(FcitxKey_F8) && !pending_ && buf_.empty()) {
