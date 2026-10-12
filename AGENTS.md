@@ -100,6 +100,10 @@ python3 ~/.local/lib/wetype-ime/arm64/wetype-cloud.py status
 
 重启 Fcitx5 后生效。`status` 里 `paired`、`cloud_enabled` 都应为 `true`。
 
+### 7. 剪贴板互通（可选，需要用户同意）
+
+启用后，用户之后复制的所有纯文本都会发给官方服务器，务必先说明并征得同意。需要 `xclip`（X11）或 `wl-clipboard`（Wayland），在图形桌面的终端执行 `wetype-cloud.py clipboard enable`，用 `clipboard status` 检查。详见 [docs/剪贴板互通.md](docs/剪贴板互通.md)。
+
 ## 必须遵守
 
 - `~/.local/state/wetype-ime/account` 是用户的设备身份，相当于登录凭据。不要打印其中内容，不要复制到仓库、issue、网盘或其他机器。
@@ -113,6 +117,7 @@ python3 ~/.local/lib/wetype-ime/arm64/wetype-cloud.py status
 |---|---|
 | 候选窗不出现 | `fcitx5-remote -n` 是否为 `wetype-im`；`~/.local/state/wetype-ime/harness.log` 末尾是否有崩溃；重新跑自检 |
 | 引擎启动即退出，日志里有 `Resource may not ready` | 词库清单和资源不配套，见 [docs/更新公共词库.md](docs/更新公共词库.md) |
+| 剪贴板不同步 | `wetype-cloud.py clipboard status` 的 `running` 和 `error`；`systemctl --user status wetype-clipboard.service`；官方客户端是否开启跨设备复制粘贴 |
 | 云候选没反应 | `wetype-cloud.py status`；网络要能直连官方服务器，代理只认系统级 TUN，不读 `http_proxy` |
 | 某个应用里打不了字 | 查该应用用的输入法模块（GTK/Qt 的 `*_IM_MODULE`、XIM、Wayland text-input），换个应用对比 |
 
@@ -139,6 +144,7 @@ cmake -S fcitx5-wetype -B build && cmake --build build && ctest --test-dir build
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 tests/test_snapshot_transport.py
 python3 scripts/check-public-source.py
+python3 scripts/test_clipboard_desktop.py --backend x11   # 需要 Xvfb、xclip
 ```
 
 插件改动还要在真实环境验证：重新编译后把 `build/libfcitx5-wetype.so` 装到 `~/.local/lib/fcitx5/`（先备份），重启 Fcitx5 试打。`fcitx5-wetype/e2e/` 下有基于 Xvfb 的界面测试，可以在不影响用户桌面的情况下验证按键行为。

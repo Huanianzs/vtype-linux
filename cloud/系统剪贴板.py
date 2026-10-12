@@ -4,7 +4,7 @@ import selectors
 import shutil
 import subprocess
 import time
-from 剪贴板协议 import MAX_TEXT_BYTES
+from 剪贴板协议 import MAX_RECEIVE_TEXT_BYTES
 
 
 class ClipboardChanged(RuntimeError):
@@ -91,7 +91,7 @@ class DesktopClipboard:
             command = paste + ['-target', target] if target else None
         if not command or 'text/uri-list' in types or any(kind.startswith('image/') for kind in types):
             return None
-        data = self.capture(command, MAX_TEXT_BYTES)
+        data = self.capture(command, MAX_RECEIVE_TEXT_BYTES)
         if data is None:
             return None
         try:

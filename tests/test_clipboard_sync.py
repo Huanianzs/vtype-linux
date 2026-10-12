@@ -31,6 +31,7 @@ class MemoryGroup:
     def __init__(self):
         self.snapshot = GroupSnapshot(20, 10, frozenset({10, 11}), None, 1000000)
         self.sent = []
+        self.cos = {}
 
     def fetch(self):
         return self.snapshot
@@ -39,9 +40,17 @@ class MemoryGroup:
         self.sent.append((text, trace))
         return 6
 
-    def receive(self, text='手机复制的文本', version=5, source=11, expires=2000, kind=1, trace='remote'):
+    def text(self, message):
+        if message.kind == 2:
+            value = self.cos[message.url]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return message.text
+
+    def receive(self, text='手机复制的文本', version=5, source=11, expires=2000, kind=1, trace='remote', url=None):
         self.snapshot = GroupSnapshot(20, 10, frozenset({10, 11}),
-                                      ClipboardMessage(version, source, expires, kind, text, trace), 1000000)
+                                      ClipboardMessage(version, source, expires, kind, text, trace, url), 1000000)
 
 
 class ClipboardSyncTest(unittest.TestCase):
@@ -100,14 +109,33 @@ class ClipboardSyncTest(unittest.TestCase):
         self.assertNotIn('结果不明的本地文本', self.state.read_text())
 
     def test_receive_rejects_expired_foreign_self_non_text_and_zero_source(self):
-        for options in ({'expires': 1000}, {'source': 12}, {'source': 10}, {'kind': 2},
-                        {'text': ''}, {'text': '中' * 90000}, {'source': 0}):
+        for options in ({'expires': 1000}, {'source': 12}, {'source': 10}, {'kind': 6},
+                        {'text': ''}, {'text': '中' * 350000}, {'source': 0}, {'trace': ''}):
             with self.subTest(options=options.keys()):
                 self.group.receive(**options)
                 if options.get('source') == 0:
                     self.group.snapshot = GroupSnapshot(20, 10, frozenset({0, 10, 11}), self.group.snapshot.message, 1000000)
                 self.sync.step()
                 self.assertEqual(self.desktop.text, '启动前已有文字')
+        self.assertEqual(self.group.sent, [])
+
+    def test_long_text_is_received_inline_or_from_cos_but_never_sent(self):
+        self.group.receive('长' * 100000)
+        self.sync.step()
+        self.assertEqual(self.desktop.text, '长' * 100000)
+        url = 'https://bucket.cos.ap-shanghai.myqcloud.com/clip?sign=x'
+        self.group.cos[url] = OSError('synthetic download failure')
+        self.group.receive('', version=6, kind=2, url=url)
+        with self.assertRaises(OSError):
+            self.sync.step()
+        self.assertEqual(self.desktop.text, '长' * 100000)
+        self.group.cos[url] = '链接里的长文本'
+        self.sync.step()
+        self.sync.step()
+        self.assertEqual(self.desktop.writes, ['长' * 100000, '链接里的长文本'])
+        self.desktop.text = '本地超长' * 70000
+        self.sync.step()
+        self.sync.step()
         self.assertEqual(self.group.sent, [])
 
     def test_failed_desktop_write_retains_cursor_and_retries_after_recovery(self):

@@ -206,9 +206,11 @@ else
     if [ -f "$units/wetype-clipboard.service" ] &&
        grep -Fq '# VType clipboard service' "$units/wetype-clipboard.service" &&
        grep -Fq "$eng/wetype-cloud.py" "$units/wetype-clipboard.service"; then
-      python3 "$eng/wetype-cloud.py" clipboard disable
+      # 用户服务管理器不可用（如 SSH 会话）时也继续卸载。
+      python3 "$eng/wetype-cloud.py" clipboard disable || true
+      systemctl --user disable --now wetype-clipboard.service 2>/dev/null || true
       rm -f "$units/wetype-clipboard.service"
-      systemctl --user daemon-reload
+      systemctl --user daemon-reload 2>/dev/null || true
     fi
     if [ -f "$units/wetype-sync.service" ] &&
        grep -Fq "$eng/cloud/会话与常用语刷新.py" "$units/wetype-sync.service"; then

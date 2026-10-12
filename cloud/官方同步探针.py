@@ -168,6 +168,7 @@ class Probe:
         if result.startswith(b'['):
             if persist_errors:
                 save_private('api-'+str(command)+'-error.bin',result)
+                raise ValueError('官方业务接口返回错误，响应已保存在账户状态目录')
             raise ValueError('官方业务接口返回错误')
         return result
 

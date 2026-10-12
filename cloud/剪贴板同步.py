@@ -11,10 +11,11 @@ import threading
 import time
 import secrets
 from pathlib import Path
-from 剪贴板协议 import MAX_TEXT_BYTES, NotSent
+from 剪贴板协议 import MAX_RECEIVE_TEXT_BYTES, MAX_TEXT_BYTES, TEXT_COS, TEXT_INLINE, NotSent
 from 运行支持 import write_doc
 
 _UNSET = object()
+REFRESH_AFTER = 600
 
 
 def fingerprint(text):
@@ -108,15 +109,19 @@ class Synchronizer:
             return
         if (not message.source or message.source not in snapshot.members or message.source == snapshot.own
                 or snapshot.own not in snapshot.members or message.expires * 1000 <= snapshot.now_ms
-                or not message.trace or message.kind != 1 or not message.text or '\0' in message.text
-                or len(message.text.encode()) > MAX_TEXT_BYTES):
+                or not message.trace or message.kind not in (TEXT_INLINE, TEXT_COS)):
+            return
+        if not self.allowed():
+            return
+        text = self.protocol.text(message)
+        if not text or '\0' in text or len(text.encode()) > MAX_RECEIVE_TEXT_BYTES:
             return
         if not self.allowed():
             return
         # 写入工具可能已改变系统剪贴板，但确认读取失败；下轮仍须抑制回传。
-        self.receiving_hash = fingerprint(message.text)
-        self.desktop.write(message.text, expected=current)
-        self.observed = fingerprint(message.text)
+        self.receiving_hash = fingerprint(text)
+        self.desktop.write(text, expected=current)
+        self.observed = fingerprint(text)
         value = dict(self.state)
         value.pop('intent', None)
         value['consumed'] = dict(value['consumed'], **{key: message.version})
@@ -206,12 +211,14 @@ def run_daemon(config, state):
             while allowed():
                 now = time.monotonic()
                 if now >= next_refresh:
+                    # 五分钟刷新任务会续期身份；只在身份久未更新时自己握手，wxc 握手期间独占身份锁。
                     try:
-                        refresh_client()
+                        if time.time() - (state / 'identity.json').stat().st_mtime > REFRESH_AFTER:
+                            refresh_client()
                         result['refresh_error'] = None
                     except Exception as error:
                         result['refresh_error'] = type(error).__name__
-                    next_refresh = time.monotonic() + 300
+                    next_refresh = time.monotonic() + 60
                 poll = now >= next_poll
                 try:
                     sync.step(poll=poll)
