@@ -36,6 +36,7 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
+#include <sys/file.h>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -46,6 +47,7 @@
 #include <unordered_set>
 
 #include "glossary.h"
+#include "common_phrases.h"
 #include "harness_log.h"
 #include "punctuation.h"
 
@@ -197,7 +199,9 @@ public:
 
     bool alive() const { return pid_ > 0; }
     bool ready() const { return state_ == State::Ready; }
+    bool idle() const { return ready() && pending_.empty(); }
     bool gaveUp() const { return gaveUp_; }
+    bool cloudConfigured() const { return cloudConfigured_; }
     void setOnReady(std::function<void()> cb) { onReady_ = std::move(cb); }
     void setOnExit(std::function<void()> cb) { onExit_ = std::move(cb); }
 
@@ -210,6 +214,13 @@ public:
         }
         std::string eng, dicts, work, qemu, sysroot;
         resolveDirs(eng, dicts, work, qemu, sysroot);
+        const char *explicitCloud=getenv("WETYPE_CLOUD_CONFIG");
+        const char *configHome=getenv("XDG_CONFIG_HOME");
+        const std::string configBase=configHome && *configHome ? configHome : std::string(getenv("HOME"))+"/.config";
+        const std::string cloudConfig=explicitCloud ? explicitCloud : configBase+"/wetype-ime/cloud.json";
+        cloudConfigured_=!qemu.empty() && access(cloudConfig.c_str(),R_OK)==0 &&
+            access((eng+"/cloud_proxy.py").c_str(),R_OK)==0;
+        learningFile_ = work + "/../sync-control/learning-generation";
         // 路径解析与轮转都在父进程做完, 子进程只保留一次 open。
         const std::string harnessLog = prepareHarnessLog();
 
@@ -226,6 +237,7 @@ public:
             return false;
         }
         if (p == 0) {
+            if(cloudConfigured_ && setpgid(0,0)<0)_exit(127);
             // QEMU user mode writes guest core files in its current directory.
             // Keep an engine crash from leaving qemu_wetype-harness_*.core in HOME.
             const struct rlimit noCore = {0, 0};
@@ -254,6 +266,12 @@ public:
                 // QEMU's default "max" CPU enables pointer authentication, which it
                 // computes in software on every libc++ call: about 2x slower.
                 setenv("QEMU_CPU", "cortex-a72", 0);
+                if(cloudConfigured_) {
+                    execl("/usr/bin/python3","/usr/bin/python3",(eng+"/cloud_proxy.py").c_str(),
+                        "--config",cloudConfig.c_str(),"--",qemu.c_str(),"-L",sysroot.c_str(),
+                        (eng+"/wetype-harness").c_str(),(eng+"/lib/libwxhld_jni.so").c_str(),"--daemon",(char *)nullptr);
+                    _exit(127);
+                }
                 execlp(qemu.c_str(), qemu.c_str(), "-L", sysroot.c_str(),
                        (eng + "/wetype-harness").c_str(),
                        (eng + "/lib/libwxhld_jni.so").c_str(), "--daemon", (char *)nullptr);
@@ -277,7 +295,8 @@ public:
         return true;
     }
 
-    void stop() {
+    bool stop() {
+        bool graceful = true;
         WLOG("stop() called (pid=%d)\n", pid_);
         if (pid_ > 0) {
             if (in_ >= 0) {
@@ -290,7 +309,7 @@ public:
             bool exited = false;
             // Let the harness process Q, destroy its engine session and flush
             // learned words. Bound shutdown so a wedged QEMU cannot stall Fcitx.
-            for (int i = 0; i < 100; ++i) {
+            for (int i = 0; i < (cloudConfigured_ ? 200 : 100); ++i) {
                 pid_t result = waitpid(pid_, &st, WNOHANG);
                 if (result == pid_ || (result < 0 && errno == ECHILD)) {
                     exited = true;
@@ -300,7 +319,8 @@ public:
                 usleep(10000);
             }
             if (!exited) {
-                kill(pid_, SIGKILL);
+                graceful = false;
+                kill(cloudConfigured_ ? -pid_ : pid_, SIGKILL);
                 while (waitpid(pid_, &st, 0) < 0 && errno == EINTR) {}
             }
             pid_ = -1;
@@ -311,6 +331,7 @@ public:
         timeSource_.reset();
         state_ = State::Dead;
         failPendingHandlers();
+        return graceful;
     }
 
     // 异步发送: handler 在主线程(IO 事件)被调用一次; 死亡时以 "" 调用
@@ -320,6 +341,11 @@ public:
              line.empty() ? '?' : line[0], line.size(), pending_.size(),
              static_cast<int>(state_));
         std::string out = line + "\n";
+        if (line.rfind("S ", 0) == 0 && !learningFile_.empty()) {
+            const auto temp = learningFile_ + ".pending";
+            std::ofstream changed(temp); changed << getpid() << ":" << nowUsec(); changed.close();
+            chmod(temp.c_str(), 0600); rename(temp.c_str(), learningFile_.c_str());
+        }
         ssize_t n = write(in_, out.data(), out.size());
         if (n < 0) {
             WLOG("write fail errno=%d → stop\n", errno);
@@ -400,6 +426,7 @@ private:
     pid_t pid_ = -1;
     int in_ = -1, out_ = -1;
     std::string rbuf_;
+    std::string learningFile_;
     State state_ = State::Dead;
     std::deque<Handler> pending_;
     std::unique_ptr<EventSourceIO> ioSource_;
@@ -408,12 +435,18 @@ private:
     std::function<void()> onExit_;
     int failCount_ = 0;
     bool gaveUp_ = false;
+    bool cloudConfigured_ = false;
 };
 
 // Punctuation history belongs to one input context and is never shared by
 // Fcitx's ShareInputState option (the property's default needCopy() is false).
 struct PunctuationState : InputContextProperty {
     wetype::TextLanguage language = wetype::TextLanguage::Unknown;
+    bool lastDigit = false, doubleQuote = false, singleQuote = false;
+};
+struct ModeState : InputContextProperty {
+    bool english=false, shiftSolo=false, ctrlSpaceDown=false;
+    KeySym shiftDown=FcitxKey_None;
 };
 
 // ---------------------------------------------------------------- 主引擎类
@@ -425,6 +458,37 @@ public:
         if (!instance_->inputContextManager().registerProperty("wetype-punctuation-state", &punctuationFactory_)) {
             throw std::runtime_error("cannot register WeType punctuation state");
         }
+        if (!instance_->inputContextManager().registerProperty("wetype-mode-state", &modeFactory_))
+            throw std::runtime_error("cannot register WeType mode state");
+        // 在 Fcitx 全局中英开关之前处理，仅作用于微信输入法。
+        modeWatcher_=instance_->watchEvent(EventType::InputContextKeyEvent,EventWatcherPhase::PreInputMethod,
+            [this](Event &event) {
+                auto &key=static_cast<KeyEvent &>(event);
+                auto *ic=key.inputContext();
+                const auto *entry=instance_->inputMethodEntry(ic);
+                if (!entry || entry->uniqueName()!="wetype-im" || ic->capabilityFlags().test(CapabilityFlag::Password)) return;
+                auto *state=ic->propertyFor(&modeFactory_);
+                const auto symbol=key.key().sym();
+                if (symbol==FcitxKey_space && ((key.isRelease() && state->ctrlSpaceDown) || key.key().check(FcitxKey_space,KeyState::Ctrl))) {
+                    if (!key.isRelease() && !state->ctrlSpaceDown) toggleMode(ic);
+                    state->ctrlSpaceDown=!key.isRelease();state->shiftSolo=false;
+                    key.filterAndAccept();return;
+                }
+                if (symbol==FcitxKey_Shift_L || symbol==FcitxKey_Shift_R) {
+                    if (!key.isRelease()) {
+                        const bool solo=!key.key().states().testAny(KeyStates{KeyState::Ctrl,KeyState::Alt,KeyState::Super,KeyState::Super2,KeyState::Meta,KeyState::Hyper,KeyState::Mod5});
+                        if (solo && state->shiftDown==FcitxKey_None) { state->shiftDown=symbol;state->shiftSolo=true; }
+                        if (solo) key.filter(); // 修饰键仍交给应用，字母大写/组合键照常。
+                    } else if (state->shiftDown==symbol) {
+                        const bool solo=state->shiftSolo;
+                        state->shiftDown=FcitxKey_None;state->shiftSolo=false;
+                        if (solo) toggleMode(ic);
+                        key.filter();
+                    }
+                    return;
+                }
+                if (!key.isRelease()) state->shiftSolo=false;
+            });
         surroundingWatcher_ = instance_->watchEvent(
             EventType::InputContextSurroundingTextUpdated, EventWatcherPhase::Default,
             [this](Event &event) {
@@ -433,37 +497,74 @@ public:
                 const auto &surrounding = ic->surroundingText();
                 auto *state = ic->propertyFor(&punctuationFactory_);
                 state->language = wetype::TextLanguage::Unknown;
+                state->lastDigit = false;
                 if (surrounding.isValid() && surrounding.cursor() > 0) {
                     const auto &text = surrounding.text();
                     const auto bytes = utf8::ncharByteLength(text.begin(), surrounding.cursor());
                     state->language = wetype::endingLanguage(std::string_view(text.data(), bytes));
+                    state->lastDigit = bytes && text[bytes-1]>='0' && text[bytes-1]<='9';
                 }
             });
         const char *xdg = getenv("XDG_DATA_HOME");
         const char *home = getenv("HOME");
         const std::string dataHome = xdg && *xdg ? xdg :
             std::string(home ? home : "/root") + "/.local/share";
+        commonPhrases_.setPath(dataHome + "/wetype-ime/common-phrases.bin");
         const std::size_t glossCount = glossary_.load(dataHome + "/wetype-ime/glossary-en.tsv");
         if (glossCount) WLOG("glossary loaded: %zu entries\n", glossCount);
         std::string eng, dicts, work, qemu, sysroot;
         resolveDirs(eng, dicts, work, qemu, sysroot);
+        syncDir_ = work + "/../sync-control";
+        wetype::mkdirParents(syncDir_);
+        chmod(syncDir_.c_str(), 0700);
+        syncLock_ = open((syncDir_ + "/lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        // Fcitx itself may be restarted while a worker holds a checkpoint.
+        // Never eagerly reopen a database that is still being handed over.
+        if (syncLock_ >= 0) {
+            if (flock(syncLock_, LOCK_EX | LOCK_NB) == 0) flock(syncLock_, LOCK_UN);
+            else {
+                syncToken_ = syncRequest();
+                if (!syncToken_.empty()) syncPaused_ = true;
+            }
+        }
+        lastKeyTime_ = now(CLOCK_MONOTONIC);
+        if (const char *delay = getenv("WETYPE_SYNC_IDLE_SECONDS"))
+            syncIdle_ = std::max(1, atoi(delay)) * 1000000ull;
+        syncTimer_ = instance_->eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 100000, 0,
+            [this](EventSourceTime *source, uint64_t) {
+                syncTick(); source->setNextInterval(100000); source->setEnabled(true); return true;
+            });
         WLOG("async addon init: eng=%s\n", eng.c_str());
         // Start eagerly so the first key never waits for the ~1.5 s engine
         // startup, and bring the engine back as soon as it exits.
         eng_.setOnExit([this] { scheduleRestart(); });
+        cloudTimer_=instance_->eventLoop().addTimeEvent(CLOCK_MONOTONIC,now(CLOCK_MONOTONIC)+60000,0,
+            [this](EventSourceTime *source,uint64_t){cloudTick();source->setNextInterval(60000);source->setEnabled(true);return true;});
         ensureEngine();
     }
     ~WeTypeEngine() override {
+        syncTimer_.reset();
+        cloudTimer_.reset();
+        if (syncLock_ >= 0) close(syncLock_);
         cancelPending();
         restartSource_.reset();
         eng_.stop();
     }
 
     void keyEvent(const InputMethodEntry &, KeyEvent &event) override { processKey(event); }
+    std::string subMode(const InputMethodEntry &,InputContext &ic) override {
+        return ic.propertyFor(&modeFactory_)->english?"英文":"中文";
+    }
+    std::string subModeLabelImpl(const InputMethodEntry &,InputContext &ic) override {
+        return ic.propertyFor(&modeFactory_)->english?"英":"中";
+    }
 
     void reset(const InputMethodEntry &entry, InputContextEvent &event) override {
         auto *ic = event.inputContext();
         if (!ic) return;
+        auto *mode=ic->propertyFor(&modeFactory_);
+        mode->shiftDown=FcitxKey_None;mode->shiftSolo=false;mode->ctrlSpaceDown=false;
         bool had = !buf_.empty() || !cands_.empty();
         eng_.send("SAVE", nullptr);
         clearAll();
@@ -492,6 +593,14 @@ public:
 
 private:
     void processKey(KeyEvent &event);
+    void toggleMode(InputContext *ic) {
+        if (icRef_.get()!=ic) { clearAll();icRef_=ic->watch(); }
+        if (pending_) fallbackPending(ic);
+        else if (!buf_.empty()) commitText(ic,buf_);
+        else clearAll(ic);
+        auto *state=ic->propertyFor(&modeFactory_);state->english=!state->english;
+        ic->updateUserInterface(UserInterfaceComponent::StatusArea);
+    }
 
     // 每页候选数跟随 fcitx5 全局设置"候选词数量"(1-10), 取不到时回退 5。
     // 翻页步进、面板显示与数字选词都以它为准, 保证每个可见候选都能选中。
@@ -525,7 +634,11 @@ private:
         auto &panel = ic.inputPanel();
         panel.reset();
         // Frontends may commit preedit on focus-out; include all consumed text.
-        if (pending_) panel.setPreedit(Text(pendingRaw()));
+        if (phraseMode_) {
+            panel.setAuxUp(Text("微信常用语 · 输入编码，空格确认，Esc退出"));
+            panel.setPreedit(Text(buf_));
+        }
+        else if (pending_) panel.setPreedit(Text(pendingRaw()));
         else panel.setPreedit(pinyinPreedit(buf_));
         if (!cands_.empty()) {
             const int start = windowStart_;
@@ -546,8 +659,8 @@ private:
                     candidate.append(" " + *gloss, TextFormatFlag::Italic);
                 }
                 cl->append<GridColumnCandidate>(std::move(candidate),
-                    [this, index](InputContext *context) {
-                        commitCandidate(context, index);
+                    [this, index, generation=candidateGeneration_, revision=revision_](InputContext *context) {
+                        if(generation==candidateGeneration_ && revision==revision_)commitCandidate(context, index);
                     });
             }
             // The API validates this index immediately against the list
@@ -560,6 +673,37 @@ private:
 
     void rememberLanguage(InputContext *ic, std::string_view text) {
         ic->propertyFor(&punctuationFactory_)->language = wetype::endingLanguage(text);
+        ic->propertyFor(&punctuationFactory_)->lastDigit = !text.empty() && text.back()>='0' && text.back()<='9';
+    }
+
+    std::string chinesePunctuation(InputContext *ic, KeySym symbol) {
+        if (punctuationLanguage(ic)!=wetype::TextLanguage::Cjk) return {};
+        auto *state=ic->propertyFor(&punctuationFactory_);
+        switch (symbol) {
+        case FcitxKey_comma: return "，";
+        case FcitxKey_period: return buf_.empty() && state->lastDigit ? std::string{} : "。";
+        case FcitxKey_semicolon: return "；";
+        case FcitxKey_colon: return "：";
+        case FcitxKey_exclam: return "！";
+        case FcitxKey_question: return "？";
+        case FcitxKey_parenleft: return "（";
+        case FcitxKey_parenright: return "）";
+        case FcitxKey_bracketleft: return "【";
+        case FcitxKey_bracketright: return "】";
+        case FcitxKey_braceleft: return "｛";
+        case FcitxKey_braceright: return "｝";
+        case FcitxKey_less: return "《";
+        case FcitxKey_greater: return "》";
+        case FcitxKey_backslash: return "、";
+        case FcitxKey_asciitilde: return "～";
+        case FcitxKey_asciicircum: return "……";
+        case FcitxKey_underscore: return "——";
+        case FcitxKey_dollar: return "￥";
+        case FcitxKey_grave: return "·";
+        case FcitxKey_quotedbl: state->doubleQuote=!state->doubleQuote; return state->doubleQuote?"“":"”";
+        case FcitxKey_apostrophe: state->singleQuote=!state->singleQuote; return state->singleQuote?"‘":"’";
+        default: return {};
+        }
     }
 
     wetype::TextLanguage punctuationLanguage(InputContext *ic, std::string_view text = {}) {
@@ -569,14 +713,16 @@ private:
                 CapabilityFlag::Digit, CapabilityFlag::Number, CapabilityFlag::Dialable})) {
             return wetype::TextLanguage::Latin;
         }
-        return text.empty() ? ic->propertyFor(&punctuationFactory_)->language
-                            : wetype::endingLanguage(text);
+        // 中文模式默认中文标点；仅数字紧邻的小数点保留 ASCII。
+        // 中英切换由 Fcitx 负责，英文模式不会进入此引擎。
+        return wetype::TextLanguage::Cjk;
     }
 
     void commitText(InputContext *ic, const std::string &text) {
         WLOG("commit len=%zu revision=%llu\n", text.size(),
              static_cast<unsigned long long>(revision_));
         rememberLanguage(ic, text);
+        phraseMode_ = false;
         ic->commitString(text);
         ++revision_;
         buf_.clear();
@@ -592,11 +738,14 @@ private:
 
     void commitCandidate(InputContext *ic, int index) {
         if (!candidatesCurrent_ || index < 0 || index >= static_cast<int>(cands_.size())) return;
+        if (phraseMode_ || (index < static_cast<int>(engineIndices_.size()) && engineIndices_[index] < 0)) {
+            commitText(ic, cands_[index]); return;
+        }
         const int cover = index < static_cast<int>(covers_.size()) ? covers_[index] : 0;
         WLOG("commit candidate index=%d count=%zu cover=%d buffer_len=%zu revision=%llu\n", index,
              cands_.size(), cover, buf_.size(), static_cast<unsigned long long>(revision_));
         if (cover <= 0 || static_cast<size_t>(cover) >= buf_.size()) {
-            eng_.send("S " + std::to_string(index), nullptr);
+            eng_.send(selectionCommand(index), nullptr);
             commitText(ic, cands_[index]);
             return;
         }
@@ -612,7 +761,7 @@ private:
         candidatesCurrent_ = false;
         windowStart_ = 0;
         selected_ = 0;
-        eng_.send("S " + std::to_string(index), candidateHandler());
+        eng_.send(selectionCommand(index), candidateHandler());
         updateUI(*ic);
     }
 
@@ -632,8 +781,10 @@ private:
     }
 
     void ensureEngine() {
+        if (syncPaused_) return;
         if (eng_.alive() || eng_.gaveUp()) return;
         spansEnabled_ = false;
+        tokensEnabled_ = false;
         if (!eng_.start()) return;
         // Ask for per-candidate input spans; older harnesses answer ERR and
         // keep whole-buffer selection.
@@ -641,6 +792,7 @@ private:
             spansEnabled_ = resp == "OK";
             WLOG("candidate spans %s\n", spansEnabled_ ? "enabled" : "unavailable");
         });
+        eng_.send("OPT tokens",[this](const std::string &resp){tokensEnabled_=resp=="OK";});
     }
 
     // Handles a CAND/EMPTY reply for the buffer as it is now. A reply for an
@@ -693,10 +845,12 @@ private:
             }
             cands_.clear();
             covers_.clear();
+            engineIndices_.clear();
             if (resp.rfind("CAND\t", 0) == 0) {
                 std::stringstream ss(resp.substr(5));
                 std::string item;
                 while (std::getline(ss, item, '\t')) {
+                    if(!item.empty() && item[0]=='@') {candidateGeneration_=std::strtoull(item.c_str()+1,nullptr,10);continue;}
                     int cover = 0;
                     if (spansEnabled_) {
                         const auto colon = item.find(':');
@@ -707,6 +861,19 @@ private:
                     if (item.empty()) continue;
                     cands_.push_back(item);
                     covers_.push_back(cover);
+                    engineIndices_.push_back(static_cast<int>(engineIndices_.size()));
+                }
+            }
+            if (current) {
+                auto phrases = commonPhrases_.automaticLookup(buf_);
+                // 常用语不交给普通词库学习；保留每个原生候选的真实序号。
+                for (auto it=phrases.rbegin(); it!=phrases.rend(); ++it) {
+                    for (size_t i=cands_.size(); i-- > 0;) if (cands_[i] == *it) {
+                        cands_.erase(cands_.begin()+i); covers_.erase(covers_.begin()+i);
+                        engineIndices_.erase(engineIndices_.begin()+i);
+                    }
+                    cands_.insert(cands_.begin(),*it); covers_.insert(covers_.begin(),static_cast<int>(buf_.size()));
+                    engineIndices_.insert(engineIndices_.begin(),-1);
                 }
             }
             candidatesCurrent_ = current;
@@ -730,6 +897,7 @@ private:
     void requestCandidates(const std::string &keys) {
         if (buf_.empty() || keys.empty()) return;
         ensureEngine();
+        preparePhraseCodes();
         WLOG("send keys chars=%zu buffer_len=%zu revision=%llu\n", keys.size(),
              buf_.size(), static_cast<unsigned long long>(revision_));
         eng_.send("B " + keys, candidateHandler());
@@ -815,14 +983,132 @@ private:
 
     Instance *instance_;
     SimpleInputContextPropertyFactory<PunctuationState> punctuationFactory_;
+    SimpleInputContextPropertyFactory<ModeState> modeFactory_;
+    std::unique_ptr<HandlerTableEntry<EventHandler>> modeWatcher_;
     std::unique_ptr<HandlerTableEntry<EventHandler>> surroundingWatcher_;
     wetype::Glossary glossary_;
+    wetype::CommonPhrases commonPhrases_;
+    bool phraseMode_ = false;
+    std::string syncDir_, syncToken_;
+    int syncLock_ = -1;
+    bool syncPaused_ = false, syncReplay_ = false, syncSaved_ = false;
+    uint64_t lastKeyTime_ = 0, syncIdle_ = 20000000;
+    std::unique_ptr<EventSourceTime> syncTimer_;
+    struct SyncKey {
+        TrackableObjectReference<InputContext> context;
+        Key raw, key; bool release; int time;
+    };
+    std::deque<SyncKey> syncKeys_;
+    std::string syncRequest() {
+        std::ifstream request(syncDir_ + "/request"); std::string token; std::getline(request, token);
+        if (token.size() != 32 || token.find_first_not_of("0123456789abcdef") != std::string::npos) return {};
+        return token;
+    }
+    void syncAcknowledge(const std::string &token) {
+        syncToken_ = token;
+        std::ofstream ack(syncDir_ + "/ack.pending"); ack << token << (syncSaved_ ? " OK\n" : " FAILED\n"); ack.close();
+        chmod((syncDir_ + "/ack.pending").c_str(), 0600);
+        rename((syncDir_ + "/ack.pending").c_str(), (syncDir_ + "/ack").c_str());
+    }
+    void syncTick() {
+        if (syncLock_ < 0) return;
+        bool worker = flock(syncLock_, LOCK_EX | LOCK_NB) != 0;
+        if (!worker) flock(syncLock_, LOCK_UN);
+        if (syncPaused_) {
+            if (!worker) {
+                syncPaused_ = false; ensureEngine();
+                unlink((syncDir_ + "/ack").c_str());
+            } else {
+                const auto token = syncRequest();
+                if (!token.empty() && token != syncToken_) syncAcknowledge(token);
+            }
+        } else if (worker && eng_.idle() && !pending_ && buf_.empty() && !phraseMode_ &&
+                   now(CLOCK_MONOTONIC) - lastKeyTime_ >= syncIdle_) {
+            const auto token = syncRequest(); if (token.empty()) return;
+            syncPaused_ = true; restartSource_.reset();
+            syncSaved_ = eng_.stop(); syncAcknowledge(token);
+            WLOG("sync checkpoint graceful=%d\n", syncSaved_ ? 1 : 0);
+        }
+        if (!syncPaused_ && (eng_.ready() || eng_.gaveUp()) && !syncKeys_.empty()) {
+            syncReplay_ = true;
+            while (!syncKeys_.empty()) {
+                auto key = std::move(syncKeys_.front()); syncKeys_.pop_front();
+                if (auto *ic = key.context.get()) {
+                    KeyEvent event(ic, key.raw, key.release, key.time); event.setKey(key.key);
+                    processKey(event);
+                    if (!event.filtered()) {
+                        ic->forwardKey(key.raw, key.release, key.time);
+                        // GTK handles forwarded editing keys asynchronously and may
+                        // reset its input context. Let that finish before replaying text.
+                        if (!key.release) break;
+                    }
+                }
+            }
+            syncReplay_ = false;
+        }
+    }
+
+    void refreshPhrases(InputContext *ic) {
+        cands_ = commonPhrases_.lookup(buf_);
+        covers_.assign(cands_.size(), 0);
+        candidatesCurrent_ = true;
+        windowStart_ = 0; selected_ = 0;
+        updateUI(*ic);
+    }
+    void preparePhraseCodes() {
+        commonPhrases_.reload();
+        const auto version=commonPhrases_.revision();
+        if (version == phraseCodesVersion_) return;
+        phraseCodesVersion_=version;
+        static constexpr char hex[]="0123456789abcdef";
+        const auto &entries=commonPhrases_.entries();
+        for (size_t i=0; i<entries.size(); ++i) {
+            if (!entries[i].first.empty()) continue;
+            // 只需开头文字即可取得前三字推荐码；限制单次 pipe 写入大小。
+            const auto &text=entries[i].second;
+            size_t count=std::min<size_t>(text.size(),768);
+            while (count<text.size() && count && (static_cast<unsigned char>(text[count]) & 0xc0)==0x80) --count;
+            std::string command="HK ";
+            for (size_t j=0;j<count;++j) { const auto c=static_cast<unsigned char>(text[j]); command+=hex[c>>4];command+=hex[c&15]; }
+            eng_.send(command,[this,i,version](const std::string &response) {
+                if (response.rfind("HK ",0)!=0) { phraseCodesVersion_=0; return; }
+                std::string code;
+                for (size_t j=3;j+1<response.size();j+=2) {
+                    char *end=nullptr;const auto pair=response.substr(j,2);
+                    const auto c=std::strtol(pair.c_str(),&end,16);
+                    if (*end || c<1 || c>127) return;
+                    code+=static_cast<char>(c);
+                }
+                commonPhrases_.setRecommendation(i,version,std::move(code));
+            });
+        }
+    }
     EngineProc eng_;
     std::string buf_;
     std::unique_ptr<EventSourceTime> restartSource_;
     std::vector<std::string> cands_;
     std::vector<int> covers_;     // pinyin letters each candidate consumes (0 = unknown)
+    std::vector<int> engineIndices_; // -1 为宿主只读常用语，其余为原生候选序号
+    uint64_t phraseCodesVersion_=0;
     bool spansEnabled_ = false;
+    bool tokensEnabled_ = false;
+    uint64_t candidateGeneration_=0,cloudAppliedRevision_=0;
+    std::unique_ptr<EventSourceTime> cloudTimer_;
+    std::string selectionCommand(int index) const {
+        const int native=index<static_cast<int>(engineIndices_.size())?engineIndices_[index]:index;
+        return "S "+std::to_string(native)+(tokensEnabled_?" "+std::to_string(candidateGeneration_):"");
+    }
+    void cloudTick() {
+        auto *ic=icRef_.get();
+        if(!ic || !eng_.cloudConfigured() || !tokensEnabled_ || !eng_.idle() || syncPaused_ || pending_ || phraseMode_ ||
+            buf_.size()<4 || !candidatesCurrent_ || cloudAppliedRevision_==revision_ ||
+            windowStart_ || selected_ || now(CLOCK_MONOTONIC)-lastKeyTime_>2500000)return;
+        auto ref=icRef_;const auto revision=revision_,epoch=epoch_;auto handler=candidateHandler();
+        eng_.send("R",[this,ref,revision,epoch,handler](const std::string &resp){
+            if(resp=="UNCHANGED" || resp.empty() || ref.get()!=icRef_.get() || revision!=revision_ || epoch!=epoch_ || buf_.empty() || phraseMode_ || windowStart_ || selected_)return;
+            if(resp.rfind("CAND\t",0)==0){cloudAppliedRevision_=revision;handler(resp);}
+        });
+    }
     // Retained candidates remain visible during composition updates, but are
     // not selectable until a result for the current buffer arrives.
     bool candidatesCurrent_ = false;
@@ -834,6 +1120,7 @@ private:
     TrackableObjectReference<InputContext> icRef_;
 
     void clearAll(InputContext *ic = nullptr) {
+        phraseMode_ = false;
         cancelPending();
         ++epoch_;
         ++revision_;
@@ -852,11 +1139,53 @@ private:
 
 void WeTypeEngine::processKey(KeyEvent &event) {
     auto ic = event.inputContext();
+    if (ic->propertyFor(&modeFactory_)->english) return;
+    if(ic->capabilityFlags().test(CapabilityFlag::Password)) {
+        if(!buf_.empty())clearAll(ic);
+        return;
+    }
+    lastKeyTime_ = now(CLOCK_MONOTONIC);
+    if (!syncReplay_ && (syncPaused_ || !syncKeys_.empty())) {
+        syncKeys_.push_back({ic->watch(), event.rawKey(), event.key(), event.isRelease(), event.time()});
+        event.filterAndAccept(); return;
+    }
     WLOG("keyEvent sym=%d ready=%d\n", (int)event.key().sym(), eng_.ready() ? 1 : 0);
     const auto sym = event.key().sym();
     bool handled = false;
     if (icRef_.get() != ic) clearAll();
     icRef_ = ic->watch();
+
+    // 独立常用语模式支持官方数字编码，避免与拼音数字选词发生冲突。
+    if (event.key().check(FcitxKey_F8) && !pending_ && buf_.empty()) {
+        if (!event.isRelease()) {
+            clearAll(ic); phraseMode_ = true; ++revision_; refreshPhrases(ic);
+        }
+        event.filterAndAccept(); return;
+    }
+    if (phraseMode_) {
+        if (event.isRelease()) { event.filterAndAccept(); return; }
+        if (event.key().states().testAny(KeyStates{KeyState::Ctrl, KeyState::Alt, KeyState::Super})) return;
+        if (sym == FcitxKey_Escape) clearAll(ic);
+        else if (sym == FcitxKey_BackSpace) {
+            if (!buf_.empty()) buf_.pop_back(); refreshPhrases(ic);
+        } else if (sym == FcitxKey_space || sym == FcitxKey_Return) {
+            if (!cands_.empty()) commitCandidate(ic, selected_);
+        } else if (sym == FcitxKey_Down || sym == FcitxKey_Up) {
+            if (!cands_.empty()) {
+                const int n = static_cast<int>(cands_.size());
+                selected_ = (selected_ + n + (sym == FcitxKey_Down ? 1 : -1)) % n;
+                windowStart_ = selected_ / pageSize() * pageSize(); updateUI(*ic);
+            }
+        } else if ((sym >= FcitxKey_a && sym <= FcitxKey_z) ||
+                   (sym >= FcitxKey_A && sym <= FcitxKey_Z) ||
+                   (sym >= FcitxKey_0 && sym <= FcitxKey_9)) {
+            if (buf_.size() < 128) {
+                buf_ += static_cast<char>(sym >= FcitxKey_A && sym <= FcitxKey_Z ? sym + 32 : sym);
+                refreshPhrases(ic);
+            }
+        }
+        event.filterAndAccept(); return;
+    }
 
     if (pending_) {
         const bool shortcut = event.key().states().testAny(KeyStates{
@@ -925,6 +1254,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
         // decimal punctuation ASCII rather than inheriting a Chinese commit.
         if (buf_.empty() && sym >= FcitxKey_0 && sym <= FcitxKey_9) {
             ic->propertyFor(&punctuationFactory_)->language = wetype::TextLanguage::Latin;
+            ic->propertyFor(&punctuationFactory_)->lastDigit = true;
         }
         // Alphabet keys, including Shift/CapsLock symbols, become lowercase
         // pinyin. Ctrl/Alt/Super/Meta shortcuts were passed through above.
@@ -994,21 +1324,16 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                 handled = true;
             }
         }
-        // Composing: classify the text being committed, not a previous word.
-        // Idle: convert only known CJK context; Latin/unknown remain passthrough.
-        else if (sym == FcitxKey_comma || sym == FcitxKey_period) {
-            const char key = sym == FcitxKey_comma ? ',' : '.';
+        else if (const auto symbol = chinesePunctuation(ic,sym); !symbol.empty()) {
             if (!buf_.empty()) {
                 const std::string text = !candidatesCurrent_ || cands_.empty() ? buf_ : cands_[selected_];
-                const auto punct = wetype::punctuation(key, punctuationLanguage(ic, text));
-                if (candidatesCurrent_ && !cands_.empty())
-                    eng_.send("S " + std::to_string(selected_), nullptr);
-                WLOG("commit with punctuation text_len=%zu\n", text.size() + punct.size());
-                // commitText sees a copy so clearing the buffer cannot invalidate it.
-                commitText(ic, text + std::string(punct));
+                if (candidatesCurrent_ && !cands_.empty() &&
+                    (selected_>=static_cast<int>(engineIndices_.size()) || engineIndices_[selected_]>=0))
+                    eng_.send(selectionCommand(selected_), nullptr);
+                commitText(ic, text + symbol);
                 handled = true;
-            } else if (punctuationLanguage(ic) == wetype::TextLanguage::Cjk) {
-                ic->commitString(std::string(wetype::punctuation(key, wetype::TextLanguage::Cjk)));
+            } else {
+                ic->commitString(symbol);
                 handled = true;
             }
         }

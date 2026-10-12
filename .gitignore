@@ -24,3 +24,22 @@
 # Local logs and test output.
 *.log
 *.csv
+
+# 私有账户、词库和研究数据永不提交。
+/private-state/
+/research/
+/downloads/
+/logs/
+/publish/
+*.pem
+*.key
+*.apk
+*.AppImage
+identity.json
+cloud.json
+common-phrases.bin
+*.pb
+
+# 本地协作约束与开发记录不属于公开发布内容。
+/AGENTS.md
+/context.md

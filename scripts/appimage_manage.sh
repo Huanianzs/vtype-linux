@@ -91,13 +91,15 @@ native=0
 # Check everything up front and print a copy-paste command; never install packages ourselves.
 check_install_deps() {
   local missing=() cmd tool id=
-  # 下载/校验/解包/补丁都收敛在 python3 标准库内（fetch_apk.py、10_patch_libs.sh）
-  for tool in python3; do
+  for tool in python3 unzip sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   # Native layout: the harness ELF interpreter is rewritten to the bundled bionic linker.
   if [ "$native" = 1 ]; then
     command -v patchelf >/dev/null 2>&1 || missing+=(patchelf)
+  fi
+  if [ -z "$apk" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    missing+=(curl)
   fi
   [ "${#missing[@]}" -eq 0 ] && return
 
@@ -106,10 +108,10 @@ check_install_deps() {
     id="$(. /etc/os-release; echo " ${ID:-} ${ID_LIKE:-} ")"
   fi
   case "$id" in
-    *" debian "*|*" ubuntu "*) cmd="sudo apt install python3" ;;
-    *" arch "*) cmd="sudo pacman -S --needed python" ;;
-    *" fedora "*|*" rhel "*|*" centos "*) cmd="sudo dnf install python3" ;;
-    *" suse "*|*" opensuse "*) cmd="sudo zypper install python3" ;;
+    *" debian "*|*" ubuntu "*) cmd="sudo apt install python3 unzip curl" ;;
+    *" arch "*) cmd="sudo pacman -S --needed python unzip curl" ;;
+    *" fedora "*|*" rhel "*|*" centos "*) cmd="sudo dnf install python3 unzip curl" ;;
+    *" suse "*|*" opensuse "*) cmd="sudo zypper install python3 unzip curl" ;;
   esac
   if [ -n "${cmd:-}" ] && [ "$native" = 1 ]; then
     cmd="$cmd patchelf"
@@ -131,10 +133,10 @@ if [ "$action" = install ]; then
   fi
   for required in \
     "$src_eng/wetype-harness" "$src_eng/wetype-ime-demo.sh" \
+    "$src_eng/libwetype-cloud.so" "$src_eng/cloud_proxy.py" "$src_eng/wetype-cloud.py" \
     "$src_eng/lib/libandroid.so" \
     "$src_eng/sysroot/system/bin/linker64" \
-    "$src_scripts/prepare_assets.sh" "$src_scripts/fetch_apk.py" \
-    "$src_scripts/10_patch_libs.sh" \
+    "$src_scripts/prepare_assets.sh" "$src_scripts/10_patch_libs.sh" \
     "$src/lib/fcitx5/libfcitx5-wetype.so" \
     "$src/share/fcitx5/addon/wetype.conf" \
     "$src/share/fcitx5/inputmethod/wetype-im.conf" \
@@ -165,6 +167,11 @@ if [ "$action" = install ]; then
     [ -e "$eng/dicts/${dict##*/}" ] || cp -a --no-preserve=ownership "$dict" "$eng/dicts/"
   done
   install -m 755 "$src_eng/wetype-harness" "$eng/wetype-harness"
+  install -m 755 "$src_eng/libwetype-cloud.so" "$eng/libwetype-cloud.so"
+  install -m 644 "$src_eng/cloud_proxy.py" "$eng/cloud_proxy.py"
+  mkdir -p "$eng/cloud"
+  cp "$src_eng"/cloud/*.py "$eng/cloud/"
+  install -m 755 "$src_eng/wetype-cloud.py" "$eng/wetype-cloud.py"
   install -m 755 "$src_eng/wetype-ime-demo.sh" "$eng/wetype-ime-demo.sh"
   if [ "$native" = 1 ]; then
     rm -f "$eng/qemu-aarch64-static"   # a leftover QEMU would make the engine launchers pick it
@@ -194,10 +201,22 @@ if [ "$action" = install ]; then
   echo "安装完成 ($scope)。Fcitx5 插件：$addon"
   echo "请重启 Fcitx5，并在输入法配置中添加“微信拼音”。"
 else
+  # 仅停止由此用户安装路径生成的刷新任务；其他同名服务不动。
+  if [ "$scope" = user ]; then
+    units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    if [ -f "$units/wetype-sync.service" ] &&
+       grep -Fq "$eng/cloud/会话与常用语刷新.py" "$units/wetype-sync.service"; then
+      systemctl --user disable --now wetype-sync.timer
+      systemctl --user stop wetype-sync.service
+      rm -f "$units/wetype-sync.service" "$units/wetype-sync.timer"
+      systemctl --user daemon-reload
+    fi
+  fi
   echo "卸载清单 ($scope)，以下路径均在 AppImage 之外："
   for path in "$addon" "$addon_conf" "$im_conf" "$desktop" "$icon" \
     "$prefix/bin/wetype-ime-engine" "$prefix/bin/wetype-demo" \
-    "$eng/wetype-harness" "$eng/wetype-ime-demo.sh" "$eng/qemu-aarch64-static"; do
+    "$eng/wetype-harness" "$eng/wetype-ime-demo.sh" "$eng/qemu-aarch64-static" \
+    "$eng/libwetype-cloud.so" "$eng/cloud_proxy.py" "$eng/wetype-cloud.py" "$eng/cloud"; do
     print_existing_paths 删除 "$path"
   done
   print_existing_paths 删除 "$eng/lib"
@@ -212,8 +231,9 @@ else
   fi
   rm -f "$addon" "$addon_conf" "$im_conf" "$desktop" "$icon" \
     "$prefix/bin/wetype-ime-engine" "$prefix/bin/wetype-demo" \
-    "$eng/wetype-harness" "$eng/wetype-ime-demo.sh" "$eng/qemu-aarch64-static"
-  rm -rf "$eng/lib" "$eng/sysroot"
+    "$eng/wetype-harness" "$eng/wetype-ime-demo.sh" "$eng/qemu-aarch64-static" \
+    "$eng/libwetype-cloud.so" "$eng/cloud_proxy.py" "$eng/wetype-cloud.py"
+  rm -rf "$eng/lib" "$eng/sysroot" "$eng/cloud"
   echo "卸载完成 ($scope)。预置词库保留在：$eng/dicts"
   echo "用户学习数据未清理。请重启 Fcitx5。"
 fi

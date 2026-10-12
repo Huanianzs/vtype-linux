@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <errno.h>
+#include <stdint.h>
 #include "dict_table.h"
 #include <sys/stat.h>
 #include <string.h>
@@ -27,6 +28,22 @@
 #include "jni.h"
 
 #define ENV_SLOTS 300
+
+/* 两类词库共用筛选规则；cell 词库必须走 add_cell_dict，不能交给 config_dict。 */
+static int dict_skipped(const char *name) {
+    const char *skip=getenv("WETYPE_SKIP_DICTS");
+    if (!skip) return 0;
+    if (!strcmp(skip,"ALL")) return 1;
+    size_t n=strlen(name);
+    for (const char *p=skip; *p;) {
+        const char *end=strchr(p,',');
+        size_t len=end ? (size_t)(end-p) : strlen(p);
+        if (len==n && !strncmp(p,name,n)) return 1;
+        if (!end) break;
+        p=end+1;
+    }
+    return 0;
+}
 
 typedef struct { const char *name; char type; /* s,i,l,f,z,o */ char owned; const void *val; } JField;
 typedef struct JObj { unsigned long magic; const char *cls; JField f[48]; int n; } JObj;
@@ -158,6 +175,8 @@ static int g_verbose = 1;
 
 /* ---------- 罐头数据 ---------- */
 static JObj g_initinfo;
+static JObj g_group_info;     /* 原生词库同步的 GroupSyncInfo，SessionConfig 与 group_info_changed 共用 */
+static int g_group_sync;
 static const char *CLS_INITINFO = "com/tencent/wxhld/info/InitInfo";
 
 /* Java byte[] 模拟 */
@@ -287,15 +306,30 @@ static unsigned long g_cand_callback_count = 0;
 /* 候选事件队列：引擎异步搜索，一次 B 可能先收到旧输入的候选。每个事件带上
  * 同批 PendingInput.match 拼出的输入串，daemon 只回复与已发送按键一致的那个。 */
 #define CAND_QUEUE 32
-typedef struct { long it; int known; char input[256]; } CandEvent;
+typedef struct { long it, sid; uint32_t version; int known; char input[256]; } CandEvent;
+static CandEvent g_cloud_q[CAND_QUEUE];
+static int g_cloud_qn;
+static long g_active_sid;
+static uint32_t g_native_version;
+static void *g_native_dci, *g_env;
+static __thread JObj *g_local_obj, *g_cloud_obj;
+static __thread long g_callback_sid;
+static uint32_t event_version(JObj *obj) {
+    JField *f=obj ? obj_get(obj,"version") : NULL;
+    return f ? (uint32_t)(uintptr_t)f->val : 0;
+}
+static void release_event(long it) {
+    if(it && g_native_dci)((void (*)(void *,void *,long))g_native_dci)(g_env,NULL,it);
+}
+
 static CandEvent g_cand_q[CAND_QUEUE];
 static int g_cand_qn = 0;
-static char g_pi_acc[256];           /* 当前批 PendingInput.match 累积（仅字母） */
-static char g_pi_last[256];          /* 最近一次完整 pendingInputs */
-static int g_pi_have = 0;
-static long g_pend_it = 0;           /* 已写入 newIterator、尚未回调的候选 */
-static int g_pend_known = 0;
-static char g_pend_input[256];
+static __thread char g_pi_acc[256];           /* 当前批 PendingInput.match 累积（仅字母） */
+static __thread char g_pi_last[256];          /* 最近一次完整 pendingInputs */
+static __thread int g_pi_have = 0;
+static __thread long g_pend_it = 0;           /* 已写入 newIterator、尚未回调的候选 */
+static __thread int g_pend_known = 0;
+static __thread char g_pend_input[256];
 static void proto_printf(const char *fmt, ...) {
     char b[8192]; va_list ap; va_start(ap, fmt);
     int n = vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
@@ -321,12 +355,16 @@ static long probe_listener(long a0, long a1, long a2, long a3) {
             }
             CandEvent *ev = &g_cand_q[g_cand_qn++];
             ev->it = it;
+            ev->sid = g_callback_sid;
+            ev->version = event_version(g_local_obj);
             ev->known = known;
             snprintf(ev->input, sizeof ev->input, "%s", g_pend_input);
             g_pend_it = 0;
         }
         pthread_cond_broadcast(&g_cand_cv);
         pthread_mutex_unlock(&g_cand_mu);
+        void (*ready)(const char *)=dlsym(RTLD_DEFAULT,"wetype_cloud_ready");
+        if(ready && known)ready(g_pend_input);
         fprintf(stderr, "[engine] candidate callback #%lu input_len=%d known=%d\n",
                 callback, input_len, known);
     }
@@ -509,7 +547,10 @@ static void F_SetLongField(void *env, void *obj, JIDToken *id, long v) {
     LOG("SetLongField(%s.%s = %ld)\n", is_jobj(obj) ? ((JObj *)obj)->cls : "null", id ? id->name : "?", v);
     if (id && !strcmp(id->name, "newIterator") && v) {
         g_last_iterator = v;
-        if (g_daemon_mode) {
+        if (g_daemon_mode && is_jobj(obj) && strstr(((JObj *)obj)->cls,"CloudEngineResult")) {
+            g_cloud_obj=(JObj *)obj;
+        } else if (g_daemon_mode) {
+            g_local_obj=(JObj *)obj;
             pthread_mutex_lock(&g_cand_mu);
             g_pend_it = v;
             g_pend_known = g_pi_have;
@@ -586,11 +627,49 @@ static unsigned char F_ExceptionCheck(void *env) { return 0; }
 /* 候选由胶水已注册的 JNI listener 推送；字段钩子捕获 iterator 后，
  * onBatchEvent 才是交付完成的通知。不要再注册 native 探针 listener：
  * 每个 listener 都会获得一个独立的、必须归还的 native iterator。
- * 不读 Java 参数，可同时挂 ...、V、A 三种变体。 */
-static void F_CallStaticVoidMethod(void *env, void *cls, JIDToken *id, ...) {
-    LOG("CallStaticVoidMethod(%s.%s)\n", cls_name(cls), id ? id->name : "?");
-    if (g_daemon_mode && id && !strcmp(id->name, "onBatchEvent"))
-        probe_listener(0, 0, 0, 0);
+ * 从三种 JNI 调用变体读取 session ID，过滤旧会话回调。 */
+static void dispatch_static(JIDToken *id,long sid) {
+    if(!g_daemon_mode || !id)return;
+    if(!strcmp(id->name,"onBatchEvent")) {
+        g_callback_sid=sid;probe_listener(0,0,0,0);
+    } else if(!strcmp(id->name,"onCloudEngineResult") && g_cloud_obj) {
+        JField *f=obj_get(g_cloud_obj,"newIterator");long it=f?(long)f->val:0;
+        CandEvent event={.it=it,.sid=sid,.version=event_version(g_cloud_obj)};
+        long old=0;g_cloud_obj=NULL;
+        pthread_mutex_lock(&g_cand_mu);
+        if(it){
+            if(g_cloud_qn==CAND_QUEUE){old=g_cloud_q[0].it;memmove(g_cloud_q,g_cloud_q+1,sizeof *g_cloud_q*(--g_cloud_qn));}
+            g_cloud_q[g_cloud_qn++]=event;
+        }
+        pthread_mutex_unlock(&g_cand_mu);release_event(old);
+    }
+}
+static int static_has_session(JIDToken *id) {
+    return id && (!strcmp(id->name,"onBatchEvent") || !strcmp(id->name,"onCloudEngineResult"));
+}
+static void F_CallStaticVoidMethod(void *env,void *cls,JIDToken *id,...) {
+    if(!static_has_session(id))return;
+    va_list ap;va_start(ap,id);long sid=va_arg(ap,long);va_end(ap);dispatch_static(id,sid);
+}
+static void F_CallStaticVoidMethodV(void *env,void *cls,JIDToken *id,va_list ap) {
+    if(!static_has_session(id))return;
+    va_list copy;va_copy(copy,ap);long sid=va_arg(copy,long);va_end(copy);dispatch_static(id,sid);
+}
+static void F_CallStaticVoidMethodA(void *env,void *cls,JIDToken *id,const jvalue *args) {
+    if(static_has_session(id))dispatch_static(id,args?args[0].j:0);
+}
+#include "cos_download.h"
+/* 仅实现异步下载；上传异步报告失败，未知静态方法返回 -1。 */
+static long F_CallStaticIntUnsupported(void *env,void *cls,JIDToken *id,...) {
+    if(!id || strcmp(id->name,"onClientCosAPI"))return -1;
+    va_list ap;va_start(ap,id);JObj *o=va_arg(ap,JObj *);int d=va_arg(ap,int);va_end(ap);return cos_request(id,o,d);
+}
+static long F_CallStaticIntUnsupportedV(void *env,void *cls,JIDToken *id,va_list ap) {
+    if(!id || strcmp(id->name,"onClientCosAPI"))return -1;
+    va_list copy;va_copy(copy,ap);JObj *o=va_arg(copy,JObj *);int d=va_arg(copy,int);va_end(copy);return cos_request(id,o,d);
+}
+static long F_CallStaticIntUnsupportedA(void *env,void *cls,JIDToken *id,const jvalue *args) {
+    return args?cos_request(id,args[0].l,args[1].z):-1;
 }
 /* 伪 JavaVM：JNI_OnLoad 会调 GetEnv（槽 6，双重间接同 JNIEnv） */
 static void *g_env;            /* 前向声明：定义在 env 布表区 */
@@ -767,8 +846,13 @@ static void build_env(void) {
     tab(ENV_SLOT(SetFloatField), F_SetFloatField);
     tab(ENV_SLOT(GetStaticMethodID), F_GetStaticMethodID);
     tab(ENV_SLOT(CallStaticVoidMethod), F_CallStaticVoidMethod);
-    tab(ENV_SLOT(CallStaticVoidMethodV), F_CallStaticVoidMethod);
-    tab(ENV_SLOT(CallStaticVoidMethodA), F_CallStaticVoidMethod);
+    tab(ENV_SLOT(CallStaticVoidMethodV), F_CallStaticVoidMethodV);
+    tab(ENV_SLOT(CallStaticVoidMethodA), F_CallStaticVoidMethodA);
+    if(getenv("WETYPE_GROUP_SYNC")){
+        tab(ENV_SLOT(CallStaticIntMethod),F_CallStaticIntUnsupported);
+        tab(ENV_SLOT(CallStaticIntMethodV),F_CallStaticIntUnsupportedV);
+        tab(ENV_SLOT(CallStaticIntMethodA),F_CallStaticIntUnsupportedA);
+    }
     tab(ENV_SLOT(GetStaticFieldID), F_GetStaticFieldID);
     tab(ENV_SLOT(GetStaticObjectField), F_GetStaticObjectField);
     tab(ENV_SLOT(GetStaticIntField), F_GetStaticIntField);
@@ -790,73 +874,6 @@ static void build_env(void) {
 }
 
 static JObj g_sesscfg;   /* daemon 重建会话复用 */
-/* 嵌套配置对象：结构与默认值取自 APK 的 com/tencent/wxhld/info/SessionConfig（3.5.4）。
- * 真实 app 由 Java 构造函数填好默认值；这里若缺失，胶水层 auto-complete 会给全 0
- * 的空对象——其中 InputAugmenter 的 enable_exchange（相邻字母乱序纠错）等五个
- * 纠错开关默认应为 true，全 0 会导致引擎关闭全部纠错（乱序输入无法纠错）。 */
-static JObj g_wubicfg, g_aug, g_lml, g_lpi, g_cml, g_cpi, g_crec, g_ctr, g_crd, g_cec, g_gsi;
-static void build_sesscfg_nested(void) {
-    /* WubiConfig{ enable_comment=true, 其余 false } */
-    memset(&g_wubicfg, 0, sizeof g_wubicfg);
-    g_wubicfg.cls = "com/tencent/wxhld/info/SessionConfig$WubiConfig";
-    obj_set(&g_wubicfg, "enable_comment", 'z', (void *)1);
-    /* InputAugmenter{ exchange/keyboard_neighbour/insert_at_middle/skip=true（Java 默认，
-     * app 的 ime_fault_* 设置默认 true 时不再覆盖），shift_key=false（app 的 h5() 总是显式置 false），
-     * 模糊音对全 false, double_pin_solution=0(DISABLED) } —— enable_exchange 即乱序纠错 */
-    memset(&g_aug, 0, sizeof g_aug);
-    g_aug.cls = "com/tencent/wxhld/info/SessionConfig$InputAugmenter";
-    obj_set(&g_aug, "wubi_config", 'o', &g_wubicfg);
-    /* app 侧 h5() 显式置 false（Java 类默认 true，但总会被覆盖） */
-    obj_set(&g_aug, "enable_shift_key_correction", 'z', (void *)0);
-    obj_set(&g_aug, "enable_exchange", 'z', (void *)1);
-    obj_set(&g_aug, "enable_keyboard_neighbour", 'z', (void *)1);
-    obj_set(&g_aug, "enable_insert_at_middle", 'z', (void *)1);
-    obj_set(&g_aug, "enable_skip", 'z', (void *)1);
-    obj_set(&g_aug, "double_pin_solution", 'i', (void *)0);
-    /* LocalMostLikelyConfig{ emoji/text 相关 true } */
-    memset(&g_lml, 0, sizeof g_lml);
-    g_lml.cls = "com/tencent/wxhld/info/SessionConfig$LocalMostLikelyConfig";
-    obj_set(&g_lml, "enable_normal_emoji", 'z', (void *)1);
-    obj_set(&g_lml, "enable_kao_emoji", 'z', (void *)1);
-    obj_set(&g_lml, "enable_normal_text", 'z', (void *)1);
-    obj_set(&g_lml, "enable_easter_egg", 'z', (void *)1);
-    obj_set(&g_lml, "enable_easter_egg_sent_out_candidate", 'z', (void *)1);
-    obj_set(&g_lml, "enable_most_likely_filter", 'z', (void *)1);
-    /* LocalProcessInputConfig{ emoji_in_user_dict/symbol_emoji 等 true } */
-    memset(&g_lpi, 0, sizeof g_lpi);
-    g_lpi.cls = "com/tencent/wxhld/info/SessionConfig$LocalProcessInputConfig";
-    obj_set(&g_lpi, "enable_normal_emoji", 'z', (void *)1);
-    obj_set(&g_lpi, "enable_kao_emoji", 'z', (void *)1);
-    obj_set(&g_lpi, "enable_emoji_in_user_dict", 'z', (void *)1);
-    obj_set(&g_lpi, "enable_symbol_emoji", 'z', (void *)1);
-    /* CloudEngineConfig 及其嵌套（无云端接入，默认即关闭，只给结构与非零默认值） */
-    memset(&g_cml, 0, sizeof g_cml);
-    g_cml.cls = "com/tencent/wxhld/info/SessionConfig$CloudMostLikelyConfig";
-    obj_set(&g_cml, "enable_normal_emoji", 'z', (void *)1);
-    obj_set(&g_cml, "enable_kao_emoji", 'z', (void *)1);
-    obj_set(&g_cml, "enable_baike", 'z', (void *)1);
-    obj_set(&g_cml, "enable_normal_text", 'z', (void *)1);
-    obj_set(&g_cml, "enable_easter_egg", 'z', (void *)1);
-    memset(&g_cpi, 0, sizeof g_cpi);
-    g_cpi.cls = "com/tencent/wxhld/info/SessionConfig$CloudProcessInputConfig";
-    obj_set(&g_cpi, "return_cnt", 'i', (void *)3);
-    memset(&g_crec, 0, sizeof g_crec);
-    g_crec.cls = "com/tencent/wxhld/info/SessionConfig$CloudRecommendConfig";
-    memset(&g_ctr, 0, sizeof g_ctr);
-    g_ctr.cls = "com/tencent/wxhld/info/SessionConfig$CloudTextRewriteConfig";
-    memset(&g_crd, 0, sizeof g_crd);
-    g_crd.cls = "com/tencent/wxhld/info/SessionConfig$CloudResourceDisplayConfig";
-    memset(&g_cec, 0, sizeof g_cec);
-    g_cec.cls = "com/tencent/wxhld/info/SessionConfig$CloudEngineConfig";
-    obj_set(&g_cec, "most_likely_config", 'o', &g_cml);
-    obj_set(&g_cec, "process_input_config", 'o', &g_cpi);
-    obj_set(&g_cec, "recommend_config", 'o', &g_crec);
-    obj_set(&g_cec, "text_rewrite_config", 'o', &g_ctr);
-    obj_set(&g_cec, "resource_display_config", 'o', &g_crd);
-    /* GroupSyncInfo：群词库同步信息，引擎只读数值字段，默认全 0 */
-    memset(&g_gsi, 0, sizeof g_gsi);
-    g_gsi.cls = "com/tencent/wxhld/info/SessionConfig$GroupSyncInfo";
-}
 
 /* ---------- daemon：候选缓存与会话管理 ---------- */
 #define MAX_CAND 72
@@ -866,6 +883,21 @@ static JBytes g_cid_obj[MAX_CAND];  /* 包在副本外的 JBytes，select_candid
 static JBytes *g_cid[MAX_CAND];    /* 指向 g_cid_obj[i]，无 id 则 NULL */
 static int g_ccover[MAX_CAND];     /* 候选覆盖的输入字母数（cover_input_len） */
 static int g_ct_n = 0;
+static int g_tokens;
+static unsigned long long g_cache_gen;
+static uint32_t g_cache_version;
+#define SNAPSHOTS 4
+typedef struct {
+    unsigned long long gen;long sid,it;int n;uint32_t version;
+    char text[MAX_CAND][256];int cover[MAX_CAND];JBytes ids[MAX_CAND];
+} SelectionSnapshot;
+static SelectionSnapshot g_snapshots[SNAPSHOTS];
+static unsigned g_next_snapshot;
+static void free_snapshot(SelectionSnapshot *s) {
+    for(int i=0;i<s->n;i++)free(s->ids[i].data);
+    release_event(s->it);memset(s,0,sizeof *s);
+}
+static void clear_snapshots(void) {for(int i=0;i<SNAPSHOTS;i++)free_snapshot(&g_snapshots[i]);}
 static long g_cur_it = 0;          /* 当前 iterator（上一轮取过候选后保留） */
 
 static void cid_copies_clear(void) {
@@ -890,8 +922,18 @@ static int daemon_fetch_cands(void *sym_cg, void *sym_dci, long it) {
         if (v > MAX_CAND) v = MAX_CAND;
         max_cand = (int)v;
     }
+    if(g_tokens && g_cur_it && g_ct_n) {
+        SelectionSnapshot *s=&g_snapshots[g_next_snapshot++%SNAPSHOTS];free_snapshot(s);
+        s->gen=g_cache_gen;s->version=g_cache_version;s->sid=g_active_sid;s->it=g_cur_it;s->n=g_ct_n;g_cur_it=0;
+        for(int i=0;i<s->n;i++){
+            memcpy(s->text[i],g_ct[i],sizeof s->text[i]);s->cover[i]=g_ccover[i];
+            if(g_cid[i]){s->ids[i]=*g_cid[i];s->ids[i].data=malloc(s->ids[i].len);
+                if(s->ids[i].data)memcpy(s->ids[i].data,g_cid[i]->data,s->ids[i].len);else s->ids[i].len=0;}
+        }
+    }
     cid_copies_clear();
     g_ct_n = 0;
+    ++g_cache_gen;g_cache_version=g_native_version;
     if (!sym_cg || !it) return 0;
     JArr *batches[MAX_CAND / 10 + 1];
     int nb = 0;
@@ -983,21 +1025,14 @@ static long mono_ms(void) {
 
 /* 等与 expected（C 以来发送的全部字母）一致的候选并返回其 iterator。
  * 引擎按搜索完成顺序回调，旧输入的候选可能先到：释放它们并继续等；长批量输入
- * 在两次搜索之间可能静默数百毫秒。已知回调与 expected 不符时允许按 quiet_ms
- * 静默窗回退（启发式：不能区分纠错与迟到的旧输入）；精确命中仍立即返回。
- * expected 为空（部分选词后剩余串未知）时保留原有 300ms 静默窗。
- * 超时退回最新候选，仍无回调返回 0。 */
+ * 在两次搜索之间可能静默数百毫秒，所以已知输入只以 timeout_ms 为限。
+ * expected 为空（部分选词后剩余串未知）时，最后一次回调后 quiet_ms 内无新回调
+ * 即退回最新候选。超时退回最新候选，仍无回调返回 0。 */
 static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
                              void *sym_dci, int *exact) {
     const long t0 = mono_ms();
-    if (!*expected) quiet_ms = 300;  /* unknown-input 路径不受纠错调优影响 */
     long best = 0, last_event = 0;
     int skipped = 0;
-    /* 纠错（乱序/键邻等增广器）会改写引擎的 PendingInput.match（合并/重分段），
-     * 使其与原始键序不再一致——此时精确匹配永远无法命中，若不吃满 timeout
-     * 就只能等。一旦某个已知输入的候选与 expected 不符，改用「回调安静
-     * quiet_ms 即视为当前输入候选已就绪」的判定，避免每键白等 2.5s。 */
-    int exact_possible = 1;
     *exact = 0;
     pthread_mutex_lock(&g_cand_mu);
     for (;;) {
@@ -1008,10 +1043,11 @@ static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
             g_cand_qn = 0;
             pthread_mutex_unlock(&g_cand_mu);
             for (int i = 0; i < n; i++) {
+                if(evs[i].sid!=g_active_sid){daemon_free_it(sym_dci,evs[i].it);continue;}
+                g_native_version=evs[i].version;
                 if (best) { daemon_free_it(sym_dci, best); skipped++; }
                 best = evs[i].it;
                 *exact = evs[i].known && !strcmp(evs[i].input, expected);
-                if (*expected && evs[i].known && !*exact) exact_possible = 0;
                 if (!*exact)
                     fprintf(stderr, "[daemon] candidate event input_len=%d known=%d sent_len=%zu (not current)\n",
                             evs[i].known ? (int)strlen(evs[i].input) : -1, evs[i].known, strlen(expected));
@@ -1023,8 +1059,7 @@ static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
         }
         const long now = mono_ms();
         long until = t0 + timeout_ms;
-        if (best && (!*expected || !exact_possible) && last_event + quiet_ms < until)
-            until = last_event + quiet_ms;
+        if (best && !*expected && last_event + quiet_ms < until) until = last_event + quiet_ms;
         if (now >= until) { pthread_mutex_unlock(&g_cand_mu); break; }
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -1056,6 +1091,7 @@ static long daemon_new_session(void *sym_cs) {
 static void daemon_reply_cands(int got, int spans) {
     if (got > 0) {
         proto_printf("CAND");
+        if(g_tokens)proto_printf("\t@%llu",g_cache_gen);
         fprintf(stderr, "[daemon] response=CAND count=%d iterator=%#lx\n", g_ct_n, g_cur_it);
         for (int i = 0; i < g_ct_n; i++) {
             if (spans) proto_printf("\t%d:%s", g_ccover[i], g_ct[i]);
@@ -1142,27 +1178,13 @@ static void run_daemon(void *h, long sid) {
         gc_every = e ? atoi(e) : 1;
     }
     long since_gc = 0;
+    g_native_dci=sym_dci;g_active_sid=sid;
 
-    char line[512];
+    char line[131080]; /* 常用语只读推荐码查询允许多行文本的十六进制传输。 */
     char sent[256] = "";    /* C 以来发送的字母，用于识别当前输入的候选 */
     size_t sent_n = 0;
     int sent_known = 1;     /* 0: 部分选词或超长后无法与 PendingInput 对齐 */
     int spans = 0;          /* OPT spans: 候选带覆盖长度，S 部分选词回复剩余候选 */
-    /* 纠错改写 match 串后的回调静默窗（毫秒）：引擎停止发新候选即发货。
-     * 越小打字越跟手，越小越容易错发次优候选（下一键修正）。 */
-    int quiet_ms = 150;
-    {
-        const char *e = getenv("WETYPE_QUIET_MS");
-        if (e && *e) {
-            char *end;
-            errno = 0;
-            long value = strtol(e, &end, 10);
-            if (!errno && end != e && !*end && value >= 1 && value <= 2500)
-                quiet_ms = (int)value;
-            else
-                fprintf(stderr, "[daemon] invalid WETYPE_QUIET_MS (expected 1..2500); using 150ms\n");
-        }
-    }
     proto_printf("READY\n");
     while (cmd_read(line, sizeof line, 1)) {
         size_t L = strlen(line);
@@ -1171,6 +1193,29 @@ static void run_daemon(void *h, long sid) {
         fprintf(stderr, "[daemon] command=%c bytes=%zu session=%ld\n",
                 line[0], L, sid);
         if (!strcmp(line, "Q")) break;
+        if (!strncmp(line, "HK ", 3)) {
+            size_t n = strlen(line + 3);
+            char *text = calloc(1, n / 2 + 1);
+            int valid = text && n && !(n & 1) && n <= 131072;
+            for (size_t i = 0; valid && i < n; i += 2) {
+                char pair[3] = {line[3+i], line[4+i], 0}, *end = NULL;
+                long value = strtol(pair, &end, 16);
+                if (*end || !value) valid = 0;
+                else text[i / 2] = (char)value;
+            }
+            void *fn = dlsym(h, "_Z31get_recommend_user_hot_word_keyP7_JNIEnvP8_jobjectP8_jstring");
+            JObj *input = valid ? str_obj(text) : NULL;
+            JObj *result = valid && fn ? ((JObj *(*)(void *,void *,void *))fn)(g_env,NULL,input) : NULL;
+            JField *field = result ? obj_get(result, "recommend_code") : NULL;
+            const unsigned char *code = field && field->type == 's' ? field->val : NULL;
+            proto_printf("HK ");
+            if (code) for (size_t i=0; code[i]; ++i) proto_printf("%02x",code[i]);
+            proto_printf("\n");
+            if (result) reg_release(result);
+            if (input) reg_release(input);
+            free(text);
+            continue;
+        }
         if (!strcmp(line, "PING")) { proto_printf("PONG\n"); fflush(NULL); fprintf(stderr, "[daemon] -> PONG\n"); continue; }
         /* X <name>：调试用，直接调引擎导出函数（看哪个能回收内存）。
          * 支持的无参/单参形式：gc_sessions、read_and_clean_last_emit_log、warm_up_dict、
@@ -1197,6 +1242,19 @@ static void run_daemon(void *h, long sid) {
             fprintf(stderr, "[daemon] X %s -> %ld (fn=%p)\n", name, r, fn);
             proto_printf("OK\t%ld\n", r);
             fflush(NULL);
+            continue;
+        }
+        if(!strcmp(line,"OPT tokens")){g_tokens=1;proto_printf("OK\n");continue;}
+        if(!strcmp(line,"R")) {
+            CandEvent events[CAND_QUEUE];int count;long best=0;
+            pthread_mutex_lock(&g_cand_mu);count=g_cloud_qn;memcpy(events,g_cloud_q,sizeof *events*count);g_cloud_qn=0;pthread_mutex_unlock(&g_cand_mu);
+            for(int i=0;i<count;i++) {
+                if(events[i].sid==sid && events[i].version==g_native_version && sent_n && sent_known && g_cur_it) {
+                    release_event(best);best=events[i].it;
+                } else release_event(events[i].it);
+            }
+            if(best)daemon_reply_cands(daemon_fetch_cands(sym_cg,sym_dci,best),spans);
+            else proto_printf("UNCHANGED\n");
             continue;
         }
         if (!strcmp(line, "OPT spans")) { spans = 1; proto_printf("OK\n"); fflush(NULL); continue; }
@@ -1233,7 +1291,7 @@ static void run_daemon(void *h, long sid) {
             }
 
             int exact = 0;
-            long it = daemon_wait_cand(sent_known ? sent : "", 2500, quiet_ms, sym_dci, &exact);
+            long it = daemon_wait_cand(sent_known ? sent : "", 2500, 300, sym_dci, &exact);
             int got = it ? daemon_fetch_cands(sym_cg, sym_dci, it) : -1;
             fprintf(stderr, "[daemon] input batch chars=%zu composition_len=%zu callbacks=%lu exact=%d iterator=%#lx candidates=%d\n",
                     strlen(keys), sent_n, g_cand_callback_count, exact, it, got);
@@ -1249,16 +1307,28 @@ static void run_daemon(void *h, long sid) {
          * 回复剩余部分的 CAND/EMPTY；整段上屏仍回复 OK。 */
         if (line[0] == 'S') {
             int idx = atoi(line + 1);
+            unsigned long long generation=0;sscanf(line+1,"%d %llu",&idx,&generation);
+            SelectionSnapshot *snapshot=NULL;
+            if(g_tokens && generation!=g_cache_gen){
+                for(int i=0;i<SNAPSHOTS;i++)if(g_snapshots[i].gen==generation && g_snapshots[i].sid==sid && g_snapshots[i].version==g_native_version)snapshot=&g_snapshots[i];
+                if(!snapshot){proto_printf("ERR\n");continue;}
+            }
+            int count=snapshot?snapshot->n:g_ct_n;
+            JBytes *chosen_id=idx>=0 && idx<count?(snapshot?&snapshot->ids[idx]:g_cid[idx]):NULL;
+            const char *chosen_text=idx>=0 && idx<count?(snapshot?snapshot->text[idx]:g_ct[idx]):"";
+            int chosen_cover=idx>=0 && idx<count?(snapshot?snapshot->cover[idx]:g_ccover[idx]):0;
+            g_native_version=0;
+            void (*reset_cloud)(void)=dlsym(RTLD_DEFAULT,"wetype_cloud_reset");if(reset_cloud)reset_cloud();
             fprintf(stderr, "[daemon] select index=%d candidate_count=%d\n", idx, g_ct_n);
-            if (idx < 0 || idx >= g_ct_n || !g_cid[idx]) { proto_printf("ERR\n"); fflush(NULL); continue; }
+            if (idx < 0 || idx >= count || !chosen_id || !chosen_id->data) { proto_printf("ERR\n"); fflush(NULL); continue; }
             static JObj sel; memset(&sel, 0, sizeof sel); sel.cls = "java/lang/String";
-            obj_set(&sel, ".str", 's', g_ct[idx]);
-            const int cover = g_ccover[idx];
+            obj_set(&sel, ".str", 's', chosen_text);
+            const int cover = chosen_cover;
             const int partial = spans && sent_known && cover > 0 && (size_t)cover < sent_n;
             daemon_drop_events(sym_dci);
             reg_sweep();
             ((void (*)(void *, void *, long, void *, void *, void *, void *, void *, void *, void *))sym_sc)
-                (g_env, NULL, sid, &sel, g_cid[idx], NULL, NULL, NULL, NULL, NULL);
+                (g_env, NULL, sid, &sel, chosen_id, NULL, NULL, NULL, NULL, NULL);
             if (!partial) {
                 sent_n = 0; sent[0] = 0; sent_known = 0;   /* 剩余串未知，按静默回退 */
                 proto_printf("OK\n");
@@ -1268,7 +1338,7 @@ static void run_daemon(void *h, long sid) {
             sent_n -= (size_t)cover;
             memmove(sent, sent + cover, sent_n + 1);
             int exact = 0;
-            long it = daemon_wait_cand(sent, 2500, quiet_ms, sym_dci, &exact);
+            long it = daemon_wait_cand(sent, 2500, 300, sym_dci, &exact);
             int got = it ? daemon_fetch_cands(sym_cg, sym_dci, it) : -1;
             fprintf(stderr, "[daemon] partial select cover=%d rest_len=%zu exact=%d candidates=%d\n",
                     cover, sent_n, exact, got);
@@ -1277,13 +1347,15 @@ static void run_daemon(void *h, long sid) {
         }
         if (!strcmp(line, "C") && sym_cs && sym_ds) {      /* C 清空输入（重建会话） */
             fprintf(stderr, "[daemon] reset begin old_session=%ld iterator=%#lx\n", sid, g_cur_it);
+            g_native_version=0;clear_snapshots();
+            void (*reset_cloud)(void)=dlsym(RTLD_DEFAULT,"wetype_cloud_reset");if(reset_cloud)reset_cloud();
             daemon_drop_events(sym_dci);
             reg_sweep();   /* 安全点：清空输入后回收全部临时对象 */
             cid_copies_clear();
             g_ct_n = 0;
             if (g_cur_it && sym_dci) { ((void (*)(void *, void *, long))sym_dci)(g_env, NULL, g_cur_it); g_cur_it = 0; }
             ((void (*)(void *, void *, long))sym_ds)(g_env, NULL, sid);
-            sid = daemon_new_session(sym_cs);
+            sid = daemon_new_session(sym_cs);g_active_sid=sid;
             g_ct_n = 0; g_last_iterator = 0;
             sent_n = 0; sent[0] = 0; sent_known = 1;
             fprintf(stderr, "[daemon] reset end new_session=%ld\n", sid);
@@ -1295,6 +1367,7 @@ static void run_daemon(void *h, long sid) {
         proto_printf("ERR\n");
         fflush(NULL);
     }
+    clear_snapshots();
     if (g_cur_it && sym_dci) ((void (*)(void *, void *, long))sym_dci)(g_env, NULL, g_cur_it);
     cid_copies_clear();
     if (sid > 0 && sym_ds) {   /* 销毁会话促使引擎落盘用户词库 */
@@ -1361,7 +1434,8 @@ int main(int argc, char **argv) {
     g_initinfo.cls = CLS_INITINFO;
     static int platform_val = 1, devperf = 2;
     obj_set(&g_initinfo, "platform", 'i', (void *)(long)platform_val);
-    obj_set(&g_initinfo, "uin", 's', "123456789012345");
+    /* 原生词库同步需要已配对设备的真实 uin；未启用同步时保持上游占位值 */
+    obj_set(&g_initinfo, "uin", 's', getenv("WETYPE_UIN") && *getenv("WETYPE_UIN") ? getenv("WETYPE_UIN") : "123456789012345");
     {
         const char *wd = getenv("WETYPE_WORK_DIR");
         if (!wd || !*wd) wd = "/tmp/wetype-work";
@@ -1407,9 +1481,6 @@ int main(int argc, char **argv) {
         static void *elems[64];
         int dn = 0;
         /* 环境变量 WETYPE_SKIP_DICTS="a.bin,b.bin" 可跳过指定词库（二分定位用） */
-        const char *skip = getenv("WETYPE_SKIP_DICTS");
-        char skips[512]; skips[0] = 0;
-        if (skip) snprintf(skips, sizeof skips, "%s", skip);
         /* hp_base（超参）必须最先加载：图初始化依赖超参先行 */
         unsigned order[64], on = 0;
         for (unsigned i = 0; i < sizeof(g_dict_table)/sizeof(g_dict_table[0]); i++)
@@ -1420,14 +1491,8 @@ int main(int argc, char **argv) {
              ii < sizeof(g_dict_table)/sizeof(g_dict_table[0]) && dn < 64; ii++) {
             unsigned i = order[ii];
             static char paths[64][600];
-            if (skip && !strcmp(skip, "ALL")) { printf("  [skip] %s\n", g_dict_table[i].name); continue; }
-            if (skip) {
-                char tmp[512]; snprintf(tmp, sizeof tmp, "%s", skips);
-                int dropped = 0;
-                for (char *tok = strtok(tmp, ","); tok; tok = strtok(NULL, ","))
-                    if (!strcmp(tok, g_dict_table[i].name)) { dropped = 1; break; }
-                if (dropped) { printf("  [skip] %s\n", g_dict_table[i].name); continue; }
-            }
+            if (dict_skipped(g_dict_table[i].name)) { printf("  [skip] %s\n", g_dict_table[i].name); continue; }
+            if (g_dict_table[i].is_cell) continue;
             JObj *di = obj_new("com/tencent/wxhld/info/DictInfo");
             snprintf(paths[dn], sizeof paths[dn], "%s/%s", dict_dir, g_dict_table[i].name);
             obj_set(di, "path", 's', paths[dn]);
@@ -1452,18 +1517,58 @@ int main(int argc, char **argv) {
         obj_set(&g_userdict, ".str", 's', udpath);
         int cr = ((int (*)(void *, void *, void *, void *))sym_cd)(g_env, NULL, &g_arr, &g_userdict);
         printf("config_dict -> %d\n", cr);
+        void *add_cell = dlsym(h, "_Z13add_cell_dictP7_JNIEnvP7_jclassP8_jstringiP8_jobject");
+        for (unsigned i=0;i<sizeof(g_dict_table)/sizeof(g_dict_table[0]);i++) {
+            if (!g_dict_table[i].is_cell || dict_skipped(g_dict_table[i].name)) continue;
+            if (!add_cell) { fprintf(stderr,"[dict] add_cell_dict missing\n"); return 3; }
+            char path[600];snprintf(path,sizeof path,"%s/%s",dict_dir,g_dict_table[i].name);
+            JObj *str=str_obj(path);
+            int ok=((int (*)(void *,void *,void *,int,void *))add_cell)(g_env,NULL,str,g_dict_table[i].type,NULL);
+            fprintf(stderr,"[dict] add_cell_dict type=%d result=%d\n",g_dict_table[i].type,ok);
+            if (!ok) return 3;
+        }
         fflush(stdout);
         usleep(400000);
     }
 
     /* 会话链路：让胶水自报 SessionConfig 字段 */
+    cos_start(h,g_env);
     void *sym_cs = dlsym(h, "_Z14create_sessionP7_JNIEnvP8_jobjectS2_");
     if (sym_cs) {
-        build_sesscfg_nested();
         memset(&g_sesscfg, 0, sizeof g_sesscfg);
         g_sesscfg.cls = "com/tencent/wxhld/info/SessionConfig";
         /* 真实 app 的 SessionConfig 默认值（keyboard_type=0 即拼音） */
         obj_set(&g_sesscfg, "app_name", 's', "com.tencent.mm");
+        if(getenv("WETYPE_CLOUD_NATIVE") && getenv("WETYPE_CLOUD_FD")) {
+            if(!dlsym(RTLD_DEFAULT,"wetype_cloud_ready"))return 5;
+            void *login=dlsym(h,"_Z13network_loginP7_JNIEnvP8_jobjectS2_");
+            static JObj network,cloud,input;
+            network.cls="com/tencent/wxhld/info/NetworkInfo";
+            obj_set(&network,"appVer",'s',"3.5.4.57423");obj_set(&network,"deviceCode",'s',"LinuxBridge");
+            if(!login)return 6;
+            ((void (*)(void *,void *,void *))login)(g_env,NULL,&network);
+            cloud.cls="com/tencent/wxhld/info/SessionConfig$CloudEngineConfig";
+            input.cls="com/tencent/wxhld/info/SessionConfig$CloudProcessInputConfig";
+            obj_set(&input,"return_cnt",'i',(void *)10);
+            obj_set(&cloud,"process_input_config",'o',&input);
+            obj_set(&cloud,"enable_cloud_search_by_input",'z',(void *)1);
+            obj_set(&g_sesscfg,"cloud_engine_config",'o',&cloud);
+            /* 原生词库同步：与 Android 一致，建会话时就带上设备组信息，
+             * 否则引擎会把“组 0 → 实际组”当成换组而清零同步进度。 */
+            const char *group=getenv("WETYPE_GROUP_SYNC");
+            if(group && getenv("WETYPE_SYNC_FD")){
+                long gid=0,fs=0,hv=0;
+                if(sscanf(group,"%ld,%ld,%ld",&gid,&fs,&hv)!=3 || gid<=0)return 8;
+                g_group_info.magic=JO_MAGIC;g_group_info.cls="com/tencent/wxhld/info/GroupSyncInfo";
+                obj_set(&g_group_info,"info_unknown",'z',(void *)0);
+                obj_set(&g_group_info,"fast_sync_for_debug",'z',(void *)0);
+                obj_set(&g_group_info,"group_id",'l',(void *)gid);
+                obj_set(&g_group_info,"func_switch",'l',(void *)fs);
+                obj_set(&g_group_info,"hot_word_current_ver",'l',(void *)hv);
+                obj_set(&g_sesscfg,"group_sync_info",'o',&g_group_info);
+                g_group_sync=1;
+            }
+        }
         obj_set(&g_sesscfg, "app_scene", 'i', (void *)2);
         static int kb_type = 0;
         { const char *kb = getenv("WETYPE_KB"); if (kb) kb_type = atoi(kb); }
@@ -1473,19 +1578,17 @@ int main(int argc, char **argv) {
         obj_set(&g_sesscfg, "enable_pre_input", 'z', (void *)1);
         obj_set(&g_sesscfg, "enable_auto_most_likely", 'z', (void *)1);
         obj_set(&g_sesscfg, "enable_user_hot_word_recommend", 'z', (void *)1);
-        /* app 侧：用户设置 ime_plus_detail_spelling_correct 默认 true → enable_local_correction=true。
-         * 这是本地纠错（含乱序/键邻候选标记）的总开关；缺省为 false 会导致纠错不生效。 */
-        obj_set(&g_sesscfg, "enable_local_correction", 'z', (void *)1);
-        obj_set(&g_sesscfg, "input_augmenter", 'o', &g_aug);
-        obj_set(&g_sesscfg, "local_most_likely_config", 'o', &g_lml);
-        obj_set(&g_sesscfg, "local_process_input_config", 'o', &g_lpi);
-        obj_set(&g_sesscfg, "cloud_engine_config", 'o', &g_cec);
-        obj_set(&g_sesscfg, "group_sync_info", 'o', &g_gsi);
         printf("calling create_session(env, NULL, SessionConfig{app_name=com.tencent.mm,kb=0})...\n");
         fflush(stdout);
         long sid = ((long (*)(void *, void *, void *))sym_cs)(g_env, NULL, &g_sesscfg);
         printf("create_session -> %ld\n", sid);
         fflush(stdout);
+        if(g_group_sync){
+            void *gic=dlsym(h,"_Z18group_info_changedP7_JNIEnvP7_jclassP8_jobject");
+            if(!gic)return 9;
+            ((void (*)(void *,void *,void *))gic)(g_env,NULL,&g_group_info);
+            fprintf(stderr,"[sync] group info delivered\n");
+        }
 
         /* 非 daemon 的一次性探针保留；daemon 只承接 JNI onBatchEvent。 */
         void *sym_asl = dlsym(h, "wxime_add_session_listener");

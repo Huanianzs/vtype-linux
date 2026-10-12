@@ -82,7 +82,7 @@ nihaozhongguo **446B**、xiao **431B**、n **424B**。
 
 ```sh
 bash scripts/make_leak_lab.sh /tmp/wetype-fix
-NDK=/home/wangyu/wetype-ime-linux/.deps/tools/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin
+NDK="$PWD"/.deps/tools/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin
 $NDK/clang --target=aarch64-linux-android28 -O0 -g \
   -o /tmp/wetype-fix/bin/jinterop harness/jinterop.c -ldl
 /tmp/wetype-fix/wrun python3 /wt/scripts/test_memory_leak.py \

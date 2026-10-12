@@ -29,17 +29,17 @@ off_t sizeOf(const std::string &path) {
 int main() {
     try {
         // $WETYPE_HARNESS_LOG wins over everything else.
-        if (wetype::harnessLogPath("/custom/harness.log", "/state", "/home/kai") !=
+        if (wetype::harnessLogPath("/custom/harness.log", "/state", "/example-home") !=
             "/custom/harness.log") {
             throw std::runtime_error("override path not honoured");
         }
         // Otherwise: XDG state dir, never /tmp.
-        if (wetype::harnessLogPath(nullptr, "/state", "/home/kai") !=
+        if (wetype::harnessLogPath(nullptr, "/state", "/example-home") !=
             "/state/wetype-ime/harness.log") {
             throw std::runtime_error("XDG_STATE_HOME not honoured");
         }
-        if (wetype::harnessLogPath("", nullptr, "/home/kai") !=
-            "/home/kai/.local/state/wetype-ime/harness.log") {
+        if (wetype::harnessLogPath("", nullptr, "/example-home") !=
+            "/example-home/.local/state/wetype-ime/harness.log") {
             throw std::runtime_error("HOME fallback not honoured");
         }
         if (wetype::harnessLogPath("", "", "") != "/tmp/.local/state/wetype-ime/harness.log") {

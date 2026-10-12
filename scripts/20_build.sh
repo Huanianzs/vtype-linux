@@ -17,4 +17,5 @@ bash scripts/prepare_bionic.sh runtime/sysroot   # no-op when runtime/sysroot is
 "$CC" $TARGET -shared -fPIC -O2 -Wl,-soname,libandroid.so -o runtime/libandroid.so shim/libandroid.c
 "$CC" $TARGET -O0 -g -o harness/jinterop harness/jinterop.c -ldl
 "$CC" $TARGET -O0 -g -o harness/probe harness/probe.c -ldl
+"$CC" $TARGET -shared -fPIC -O2 -Wall -o runtime/libwetype-cloud.so cloud/cloud_net.c
 echo "build ok"

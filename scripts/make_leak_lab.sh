@@ -10,7 +10,7 @@
 #                  ro 挂到 /wt、主仓 NDK ro 挂到 /deps
 #
 # 用法（在 worktree 里）:
-#   bash /home/wangyu/wetype-ime-linux/scripts/make_leak_lab.sh /tmp/wetype-xxx
+#   bash scripts/make_leak_lab.sh /tmp/wetype-xxx
 #   /tmp/wetype-xxx/wrun python3 /wt/scripts/test_memory_leak.py \
 #       --engine-dir /ws/engine --harness /ws/bin/jinterop --rounds 30
 set -e
@@ -20,7 +20,7 @@ WT=$(pwd)
 [ -d "$WT/.git" ] || git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || {
     echo "must run from a git worktree of wetype-ime-linux" >&2; exit 2; }
 SRC_ENGINE=$HOME/.local/lib/wetype-ime/arm64
-MAIN_REPO=/home/wangyu/wetype-ime-linux
+MAIN_REPO=${WETYPE_MAIN_REPO:-$WT}
 IMG=wetype-test:24.04
 [ -d "$SRC_ENGINE" ] || { echo "missing installed engine: $SRC_ENGINE" >&2; exit 1; }
 

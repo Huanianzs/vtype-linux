@@ -17,7 +17,7 @@ set -e
 BASE="$(cd "$(dirname "$0")/.." && pwd)"     # wetype-ime-linux 根
 APPDIR="$BASE/AppDir"
 ENG="$APPDIR/usr/lib/wetype-ime/arm64"
-PATCH_SCRIPTS="prepare_assets.sh fetch_apk.py 10_patch_libs.sh 17_disable_scan_sig.py 21_fake_appender.py"
+PATCH_SCRIPTS="prepare_assets.sh 10_patch_libs.sh 17_disable_scan_sig.py 21_fake_appender.py"
 case "${WETYPE_TARGET_ARCH:-$(uname -m)}" in
   aarch64|arm64) NATIVE=1 ;;
   *) NATIVE=0 ;;
@@ -25,7 +25,7 @@ esac
 
 # Build the project's own ARM64 pieces and extract the bionic runtime (no APK input needed).
 if [ "${WETYPE_SKIP_NDK_BUILD:-}" = 1 ]; then
-  for f in runtime/libandroid.so harness/jinterop runtime/sysroot/system/bin/linker64; do
+  for f in runtime/libandroid.so runtime/libwetype-cloud.so harness/jinterop runtime/sysroot/system/bin/linker64; do
     [ -e "$BASE/$f" ] || { echo "WETYPE_SKIP_NDK_BUILD=1 但缺少 $f" >&2; exit 1; }
   done
 else
@@ -47,6 +47,11 @@ mkdir -p "$ENG/lib" "$APPDIR/usr/lib/wetype-ime/scripts" "$APPDIR/usr/bin" \
 # 1. 自有 ARM64 组件 + demo；WeType 引擎库与词库由 install 在用户机器上生成
 cp "$BASE/runtime/libandroid.so" "$ENG/lib/"
 cp "$BASE/harness/jinterop" "$ENG/wetype-harness"
+cp "$BASE/runtime/libwetype-cloud.so" "$ENG/libwetype-cloud.so"
+cp "$BASE/cloud/实时云桥接.py" "$ENG/cloud_proxy.py"
+mkdir -p "$ENG/cloud"
+cp "$BASE"/cloud/*.py "$ENG/cloud/"
+cp "$BASE/scripts/wetype-cloud.py" "$ENG/wetype-cloud.py"
 cp "$BASE/src/wetype-ime-demo.sh" "$ENG/"
 chmod +x "$ENG/wetype-ime-demo.sh"
 

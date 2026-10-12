@@ -4,16 +4,7 @@
 set -e
 ulimit -c 0
 WORD="${1:-nihao}"
-# 引擎目录定位：脚本所在目录自身就是引擎目录（安装/AppImage 布局：arm64/{lib,dicts,...}）；
-# 否则回退上一级（开发树布局：scripts 在 src/ 或仓库根下）。WETYPE_ENGINE_DIR 始终优先。
-ENG="${WETYPE_ENGINE_DIR:-}"
-if [ -z "$ENG" ]; then
-  SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
-  SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
-  if [ -d "$SELF_DIR/lib" ] || [ -x "$SELF_DIR/wetype-harness" ]; then ENG="$SELF_DIR"
-  else ENG="$(cd "$SELF_DIR/.." && pwd)"
-  fi
-fi
+ENG="${WETYPE_ENGINE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 HARNESS="$ENG/harness/jinterop"
 [ -x "$HARNESS" ] || HARNESS="$ENG/wetype-harness"
 LIBDIR="$ENG/lib"
