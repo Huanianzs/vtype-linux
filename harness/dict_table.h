@@ -1,4 +1,5 @@
-/* 由已校验 index.json 生成：is_cell 决定原生加载接口。 */
+/* 由微信输入法 Android 3.5.4 APK 自带 assets/config/beta/index.json 生成；is_cell 决定原生加载接口。
+ * 关联账号后可用 scripts/prepare-public-resources.py 下载更新资源并生成新表。 */
 static const struct { const char *name; int type; int version; int is_cell; } g_dict_table[] = {
     {"sw.bin", 65560, 1643, 0},
     {"sd.bin", 65559, 1542, 0},
@@ -28,7 +29,7 @@ static const struct { const char *name; int type; int version; int is_cell; } g_
     {"wwkvc2e.bin", 65566, 992, 0},
     {"akv.bin", 65545, 1086, 0},
     {"wkvc2e.bin", 65553, 1535, 0},
-    {"cell_dict.ssrc.zh", 7, 1332, 1},
+    {"cell_dict.ssrc.zh", 7, 1223, 1},
     {"hp_base.bin", 262144, 1513, 0},
     {"wlwmd.bin", 65564, 990, 0},
     {"tcd.bin", 65570, 962, 0},
@@ -40,12 +41,4 @@ static const struct { const char *name; int type; int version; int is_cell; } g_
     {"hwd_hand_write.bin", 524290, 1118, 0},
     {"noun_tag_dict.bin", 65580, 48, 0},
     {"atp.bin", 262148, 597, 0},
-    {"bwcjp_jianpin.bin", 65546, 1174, 0},
-    {"bwcnv8.bin", 65581, 27, 0},
-    {"c4g.bin", 131074, 955, 0},
-    {"cell_dict.hf.zh", 0, 547, 1},
-    {"cell_dict.wrw.zh", 1, 856, 1},
-    {"slwd_second_level.bin", 65551, 1305, 0},
-    {"cell_dict.fi", 8, 763, 1},
-    {"cell_dict.newhot.common.zh", 1, 7312, 1},
 };

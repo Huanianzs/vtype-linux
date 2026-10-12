@@ -874,6 +874,73 @@ static void build_env(void) {
 }
 
 static JObj g_sesscfg;   /* daemon 重建会话复用 */
+/* 嵌套配置对象：结构与默认值取自 APK 的 com/tencent/wxhld/info/SessionConfig（3.5.4）。
+ * 真实 app 由 Java 构造函数填好默认值；这里若缺失，胶水层 auto-complete 会给全 0
+ * 的空对象——其中 InputAugmenter 的 enable_exchange（相邻字母乱序纠错）等五个
+ * 纠错开关默认应为 true，全 0 会导致引擎关闭全部纠错（乱序输入无法纠错）。 */
+static JObj g_wubicfg, g_aug, g_lml, g_lpi, g_cml, g_cpi, g_crec, g_ctr, g_crd, g_cec, g_gsi;
+static void build_sesscfg_nested(void) {
+    /* WubiConfig{ enable_comment=true, 其余 false } */
+    memset(&g_wubicfg, 0, sizeof g_wubicfg);
+    g_wubicfg.cls = "com/tencent/wxhld/info/SessionConfig$WubiConfig";
+    obj_set(&g_wubicfg, "enable_comment", 'z', (void *)1);
+    /* InputAugmenter{ exchange/keyboard_neighbour/insert_at_middle/skip=true（Java 默认，
+     * app 的 ime_fault_* 设置默认 true 时不再覆盖），shift_key=false（app 的 h5() 总是显式置 false），
+     * 模糊音对全 false, double_pin_solution=0(DISABLED) } —— enable_exchange 即乱序纠错 */
+    memset(&g_aug, 0, sizeof g_aug);
+    g_aug.cls = "com/tencent/wxhld/info/SessionConfig$InputAugmenter";
+    obj_set(&g_aug, "wubi_config", 'o', &g_wubicfg);
+    /* app 侧 h5() 显式置 false（Java 类默认 true，但总会被覆盖） */
+    obj_set(&g_aug, "enable_shift_key_correction", 'z', (void *)0);
+    obj_set(&g_aug, "enable_exchange", 'z', (void *)1);
+    obj_set(&g_aug, "enable_keyboard_neighbour", 'z', (void *)1);
+    obj_set(&g_aug, "enable_insert_at_middle", 'z', (void *)1);
+    obj_set(&g_aug, "enable_skip", 'z', (void *)1);
+    obj_set(&g_aug, "double_pin_solution", 'i', (void *)0);
+    /* LocalMostLikelyConfig{ emoji/text 相关 true } */
+    memset(&g_lml, 0, sizeof g_lml);
+    g_lml.cls = "com/tencent/wxhld/info/SessionConfig$LocalMostLikelyConfig";
+    obj_set(&g_lml, "enable_normal_emoji", 'z', (void *)1);
+    obj_set(&g_lml, "enable_kao_emoji", 'z', (void *)1);
+    obj_set(&g_lml, "enable_normal_text", 'z', (void *)1);
+    obj_set(&g_lml, "enable_easter_egg", 'z', (void *)1);
+    obj_set(&g_lml, "enable_easter_egg_sent_out_candidate", 'z', (void *)1);
+    obj_set(&g_lml, "enable_most_likely_filter", 'z', (void *)1);
+    /* LocalProcessInputConfig{ emoji_in_user_dict/symbol_emoji 等 true } */
+    memset(&g_lpi, 0, sizeof g_lpi);
+    g_lpi.cls = "com/tencent/wxhld/info/SessionConfig$LocalProcessInputConfig";
+    obj_set(&g_lpi, "enable_normal_emoji", 'z', (void *)1);
+    obj_set(&g_lpi, "enable_kao_emoji", 'z', (void *)1);
+    obj_set(&g_lpi, "enable_emoji_in_user_dict", 'z', (void *)1);
+    obj_set(&g_lpi, "enable_symbol_emoji", 'z', (void *)1);
+    /* CloudEngineConfig 及其嵌套：默认不开云查询；WETYPE_CLOUD_NATIVE 时在此对象上开启 */
+    memset(&g_cml, 0, sizeof g_cml);
+    g_cml.cls = "com/tencent/wxhld/info/SessionConfig$CloudMostLikelyConfig";
+    obj_set(&g_cml, "enable_normal_emoji", 'z', (void *)1);
+    obj_set(&g_cml, "enable_kao_emoji", 'z', (void *)1);
+    obj_set(&g_cml, "enable_baike", 'z', (void *)1);
+    obj_set(&g_cml, "enable_normal_text", 'z', (void *)1);
+    obj_set(&g_cml, "enable_easter_egg", 'z', (void *)1);
+    memset(&g_cpi, 0, sizeof g_cpi);
+    g_cpi.cls = "com/tencent/wxhld/info/SessionConfig$CloudProcessInputConfig";
+    obj_set(&g_cpi, "return_cnt", 'i', (void *)3);
+    memset(&g_crec, 0, sizeof g_crec);
+    g_crec.cls = "com/tencent/wxhld/info/SessionConfig$CloudRecommendConfig";
+    memset(&g_ctr, 0, sizeof g_ctr);
+    g_ctr.cls = "com/tencent/wxhld/info/SessionConfig$CloudTextRewriteConfig";
+    memset(&g_crd, 0, sizeof g_crd);
+    g_crd.cls = "com/tencent/wxhld/info/SessionConfig$CloudResourceDisplayConfig";
+    memset(&g_cec, 0, sizeof g_cec);
+    g_cec.cls = "com/tencent/wxhld/info/SessionConfig$CloudEngineConfig";
+    obj_set(&g_cec, "most_likely_config", 'o', &g_cml);
+    obj_set(&g_cec, "process_input_config", 'o', &g_cpi);
+    obj_set(&g_cec, "recommend_config", 'o', &g_crec);
+    obj_set(&g_cec, "text_rewrite_config", 'o', &g_ctr);
+    obj_set(&g_cec, "resource_display_config", 'o', &g_crd);
+    /* GroupSyncInfo：群词库同步信息，引擎只读数值字段，默认全 0 */
+    memset(&g_gsi, 0, sizeof g_gsi);
+    g_gsi.cls = "com/tencent/wxhld/info/SessionConfig$GroupSyncInfo";
+}
 
 /* ---------- daemon：候选缓存与会话管理 ---------- */
 #define MAX_CAND 72
@@ -1025,14 +1092,21 @@ static long mono_ms(void) {
 
 /* 等与 expected（C 以来发送的全部字母）一致的候选并返回其 iterator。
  * 引擎按搜索完成顺序回调，旧输入的候选可能先到：释放它们并继续等；长批量输入
- * 在两次搜索之间可能静默数百毫秒，所以已知输入只以 timeout_ms 为限。
- * expected 为空（部分选词后剩余串未知）时，最后一次回调后 quiet_ms 内无新回调
- * 即退回最新候选。超时退回最新候选，仍无回调返回 0。 */
+ * 在两次搜索之间可能静默数百毫秒。已知回调与 expected 不符时允许按 quiet_ms
+ * 静默窗回退（启发式：不能区分纠错与迟到的旧输入）；精确命中仍立即返回。
+ * expected 为空（部分选词后剩余串未知）时保留原有 300ms 静默窗。
+ * 超时退回最新候选，仍无回调返回 0。 */
 static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
                              void *sym_dci, int *exact) {
     const long t0 = mono_ms();
+    if (!*expected) quiet_ms = 300;  /* unknown-input 路径不受纠错调优影响 */
     long best = 0, last_event = 0;
     int skipped = 0;
+    /* 纠错（乱序/键邻等增广器）会改写引擎的 PendingInput.match（合并/重分段），
+     * 使其与原始键序不再一致——此时精确匹配永远无法命中，若不吃满 timeout
+     * 就只能等。一旦某个已知输入的候选与 expected 不符，改用「回调安静
+     * quiet_ms 即视为当前输入候选已就绪」的判定，避免每键白等 2.5s。 */
+    int exact_possible = 1;
     *exact = 0;
     pthread_mutex_lock(&g_cand_mu);
     for (;;) {
@@ -1048,6 +1122,7 @@ static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
                 if (best) { daemon_free_it(sym_dci, best); skipped++; }
                 best = evs[i].it;
                 *exact = evs[i].known && !strcmp(evs[i].input, expected);
+                if (*expected && evs[i].known && !*exact) exact_possible = 0;
                 if (!*exact)
                     fprintf(stderr, "[daemon] candidate event input_len=%d known=%d sent_len=%zu (not current)\n",
                             evs[i].known ? (int)strlen(evs[i].input) : -1, evs[i].known, strlen(expected));
@@ -1059,7 +1134,8 @@ static long daemon_wait_cand(const char *expected, int timeout_ms, int quiet_ms,
         }
         const long now = mono_ms();
         long until = t0 + timeout_ms;
-        if (best && !*expected && last_event + quiet_ms < until) until = last_event + quiet_ms;
+        if (best && (!*expected || !exact_possible) && last_event + quiet_ms < until)
+            until = last_event + quiet_ms;
         if (now >= until) { pthread_mutex_unlock(&g_cand_mu); break; }
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -1185,6 +1261,21 @@ static void run_daemon(void *h, long sid) {
     size_t sent_n = 0;
     int sent_known = 1;     /* 0: 部分选词或超长后无法与 PendingInput 对齐 */
     int spans = 0;          /* OPT spans: 候选带覆盖长度，S 部分选词回复剩余候选 */
+    /* 纠错改写 match 串后的回调静默窗（毫秒）：引擎停止发新候选即发货。
+     * 越小打字越跟手，越小越容易错发次优候选（下一键修正）。 */
+    int quiet_ms = 150;
+    {
+        const char *e = getenv("WETYPE_QUIET_MS");
+        if (e && *e) {
+            char *end;
+            errno = 0;
+            long value = strtol(e, &end, 10);
+            if (!errno && end != e && !*end && value >= 1 && value <= 2500)
+                quiet_ms = (int)value;
+            else
+                fprintf(stderr, "[daemon] invalid WETYPE_QUIET_MS (expected 1..2500); using 150ms\n");
+        }
+    }
     proto_printf("READY\n");
     while (cmd_read(line, sizeof line, 1)) {
         size_t L = strlen(line);
@@ -1291,7 +1382,7 @@ static void run_daemon(void *h, long sid) {
             }
 
             int exact = 0;
-            long it = daemon_wait_cand(sent_known ? sent : "", 2500, 300, sym_dci, &exact);
+            long it = daemon_wait_cand(sent_known ? sent : "", 2500, quiet_ms, sym_dci, &exact);
             int got = it ? daemon_fetch_cands(sym_cg, sym_dci, it) : -1;
             fprintf(stderr, "[daemon] input batch chars=%zu composition_len=%zu callbacks=%lu exact=%d iterator=%#lx candidates=%d\n",
                     strlen(keys), sent_n, g_cand_callback_count, exact, it, got);
@@ -1338,7 +1429,7 @@ static void run_daemon(void *h, long sid) {
             sent_n -= (size_t)cover;
             memmove(sent, sent + cover, sent_n + 1);
             int exact = 0;
-            long it = daemon_wait_cand(sent, 2500, 300, sym_dci, &exact);
+            long it = daemon_wait_cand(sent, 2500, quiet_ms, sym_dci, &exact);
             int got = it ? daemon_fetch_cands(sym_cg, sym_dci, it) : -1;
             fprintf(stderr, "[daemon] partial select cover=%d rest_len=%zu exact=%d candidates=%d\n",
                     cover, sent_n, exact, got);
@@ -1535,24 +1626,24 @@ int main(int argc, char **argv) {
     cos_start(h,g_env);
     void *sym_cs = dlsym(h, "_Z14create_sessionP7_JNIEnvP8_jobjectS2_");
     if (sym_cs) {
+        build_sesscfg_nested();
         memset(&g_sesscfg, 0, sizeof g_sesscfg);
         g_sesscfg.cls = "com/tencent/wxhld/info/SessionConfig";
         /* 真实 app 的 SessionConfig 默认值（keyboard_type=0 即拼音） */
         obj_set(&g_sesscfg, "app_name", 's', "com.tencent.mm");
+        /* 嵌套默认值先放入；下面的云候选和原生同步在同一对象上覆盖相应字段。 */
+        obj_set(&g_sesscfg, "cloud_engine_config", 'o', &g_cec);
+        obj_set(&g_sesscfg, "group_sync_info", 'o', &g_gsi);
         if(getenv("WETYPE_CLOUD_NATIVE") && getenv("WETYPE_CLOUD_FD")) {
             if(!dlsym(RTLD_DEFAULT,"wetype_cloud_ready"))return 5;
             void *login=dlsym(h,"_Z13network_loginP7_JNIEnvP8_jobjectS2_");
-            static JObj network,cloud,input;
+            static JObj network;
             network.cls="com/tencent/wxhld/info/NetworkInfo";
             obj_set(&network,"appVer",'s',"3.5.4.57423");obj_set(&network,"deviceCode",'s',"LinuxBridge");
             if(!login)return 6;
             ((void (*)(void *,void *,void *))login)(g_env,NULL,&network);
-            cloud.cls="com/tencent/wxhld/info/SessionConfig$CloudEngineConfig";
-            input.cls="com/tencent/wxhld/info/SessionConfig$CloudProcessInputConfig";
-            obj_set(&input,"return_cnt",'i',(void *)10);
-            obj_set(&cloud,"process_input_config",'o',&input);
-            obj_set(&cloud,"enable_cloud_search_by_input",'z',(void *)1);
-            obj_set(&g_sesscfg,"cloud_engine_config",'o',&cloud);
+            obj_set(&g_cpi,"return_cnt",'i',(void *)10);
+            obj_set(&g_cec,"enable_cloud_search_by_input",'z',(void *)1);
             /* 原生词库同步：与 Android 一致，建会话时就带上设备组信息，
              * 否则引擎会把“组 0 → 实际组”当成换组而清零同步进度。 */
             const char *group=getenv("WETYPE_GROUP_SYNC");
@@ -1578,6 +1669,12 @@ int main(int argc, char **argv) {
         obj_set(&g_sesscfg, "enable_pre_input", 'z', (void *)1);
         obj_set(&g_sesscfg, "enable_auto_most_likely", 'z', (void *)1);
         obj_set(&g_sesscfg, "enable_user_hot_word_recommend", 'z', (void *)1);
+        /* app 侧：用户设置 ime_plus_detail_spelling_correct 默认 true → enable_local_correction=true。
+         * 这是本地纠错（含乱序/键邻候选标记）的总开关；缺省为 false 会导致纠错不生效。 */
+        obj_set(&g_sesscfg, "enable_local_correction", 'z', (void *)1);
+        obj_set(&g_sesscfg, "input_augmenter", 'o', &g_aug);
+        obj_set(&g_sesscfg, "local_most_likely_config", 'o', &g_lml);
+        obj_set(&g_sesscfg, "local_process_input_config", 'o', &g_lpi);
         printf("calling create_session(env, NULL, SessionConfig{app_name=com.tencent.mm,kb=0})...\n");
         fflush(stdout);
         long sid = ((long (*)(void *, void *, void *))sym_cs)(g_env, NULL, &g_sesscfg);

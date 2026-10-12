@@ -2,7 +2,8 @@
 
 同步请求只放行已核对的 4814 子命令：34 组信息/常用语/清理记录拉取（不含剪贴板位）、41 增量上传、42 增量拉取、
 44 全量同步信息查询。native_snapshot_download 开启时允许已知快照及本身份的 COS 凭证查询（60），
-宿主仅执行 HTTPS GET；JNI 上传任务异步失败，不发送文件。全量状态写入43、上屏报告91等继续拒绝。"""
+宿主仅执行 HTTPS GET；JNI 上传任务异步失败，不发送文件。43 全量状态上报、91 上屏报告由宿主本地回复成功、
+不联网：被拒时引擎会反复重试，91 的待发上屏队列（最多100条）也一直留在词库里。其他未核对请求继续拒绝。"""
 import argparse,concurrent.futures,fcntl,json,os,selectors,socket,struct,subprocess,sys,threading,time,urllib.parse,urllib.request,tempfile
 from collections import deque
 from pathlib import Path
@@ -36,6 +37,11 @@ def sync_service(p,sock,uin,group,log_path,readonly=False,downloads=False):
             if set(extra)!={'group_id','key'}:return 'cos_extra_fields'
             if str(extra.get('group_id'))!=str(group) or extra.get('key') not in download_keys:return 'cos_group_or_key'
             return None
+        if sub==43:
+            f43=p.fields(p.one(f,1,b''))
+            if p.one(f43,1)!=uin or p.one(f,2)!=group:return 'local_ack_uin_or_group'
+            return None
+        if sub==91:return None
         if sub not in SYNC_ALLOWED:return 'subcommand'
         if readonly and sub==41:return 'isolated_readonly'
         if p.one(f,1)!=uin:return 'uin'
@@ -73,7 +79,10 @@ def sync_service(p,sock,uin,group,log_path,readonly=False,downloads=False):
             if refused:entry['refused']=refused
             else:
                 if sub==41:entry['ops']=len(p.fields(p.one(p.fields(body),2,b'')).get(1,[]))
-                response=request(sub,body);code=0
+                # 43 回 {status 0}；91 的响应字段1是嵌套消息，回 {1:0} 会解析失败、不清队列，空响应即全默认成功。
+                if sub in (43,91):response=p.number(1,0) if sub==43 else b'';entry['local_ack']=True
+                else:response=request(sub,body)
+                code=0
                 if sub==44:
                     metadata=p.fields(response)
                     if p.one(metadata,1,-1)==0:

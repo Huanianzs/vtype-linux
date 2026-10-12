@@ -17,7 +17,7 @@ set -e
 BASE="$(cd "$(dirname "$0")/.." && pwd)"     # wetype-ime-linux 根
 APPDIR="$BASE/AppDir"
 ENG="$APPDIR/usr/lib/wetype-ime/arm64"
-PATCH_SCRIPTS="prepare_assets.sh 10_patch_libs.sh 17_disable_scan_sig.py 21_fake_appender.py"
+PATCH_SCRIPTS="prepare_assets.sh fetch_apk.py 10_patch_libs.sh 17_disable_scan_sig.py 21_fake_appender.py"
 case "${WETYPE_TARGET_ARCH:-$(uname -m)}" in
   aarch64|arm64) NATIVE=1 ;;
   *) NATIVE=0 ;;
