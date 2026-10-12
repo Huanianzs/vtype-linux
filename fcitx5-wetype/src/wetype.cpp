@@ -629,11 +629,7 @@ private:
         auto &panel = ic.inputPanel();
         panel.reset();
         // Frontends may commit preedit on focus-out; include all consumed text.
-        if (phraseMode_) {
-            panel.setAuxUp(Text("微信常用语 · 输入编码，空格确认，Esc退出"));
-            panel.setPreedit(Text(buf_));
-        }
-        else if (pending_) panel.setPreedit(Text(pendingRaw()));
+        if (pending_) panel.setPreedit(Text(pendingRaw()));
         else panel.setPreedit(pinyinPreedit(buf_));
         if (cands_.empty() && !digitHits_.empty()) {
             // 数字常用语：已输入的数字照常上屏，回车只补全剩余部分。
@@ -732,7 +728,6 @@ private:
         WLOG("commit len=%zu revision=%llu\n", text.size(),
              static_cast<unsigned long long>(revision_));
         rememberLanguage(ic, text);
-        phraseMode_ = false;
         ic->commitString(text);
         ++revision_;
         buf_.clear();
@@ -748,7 +743,7 @@ private:
 
     void commitCandidate(InputContext *ic, int index) {
         if (!candidatesCurrent_ || index < 0 || index >= static_cast<int>(cands_.size())) return;
-        if (phraseMode_ || (index < static_cast<int>(engineIndices_.size()) && engineIndices_[index] < 0)) {
+        if ((index < static_cast<int>(engineIndices_.size()) && engineIndices_[index] < 0)) {
             commitText(ic, cands_[index]); return;
         }
         const int cover = index < static_cast<int>(covers_.size()) ? covers_[index] : 0;
@@ -1033,7 +1028,6 @@ private:
     std::unique_ptr<HandlerTableEntry<EventHandler>> surroundingWatcher_;
     wetype::Glossary glossary_;
     wetype::CommonPhrases commonPhrases_;
-    bool phraseMode_ = false;
     std::string syncDir_, syncToken_;
     int syncLock_ = -1;
     bool syncPaused_ = false, syncReplay_ = false, syncSaved_ = false;
@@ -1067,7 +1061,7 @@ private:
                 const auto token = syncRequest();
                 if (!token.empty() && token != syncToken_) syncAcknowledge(token);
             }
-        } else if (worker && eng_.idle() && !pending_ && buf_.empty() && !phraseMode_ &&
+        } else if (worker && eng_.idle() && !pending_ && buf_.empty() &&
                    now(CLOCK_MONOTONIC) - lastKeyTime_ >= syncIdle_) {
             const auto token = syncRequest(); if (token.empty()) return;
             syncPaused_ = true; restartSource_.reset();
@@ -1093,13 +1087,6 @@ private:
         }
     }
 
-    void refreshPhrases(InputContext *ic) {
-        cands_ = commonPhrases_.lookup(buf_);
-        covers_.assign(cands_.size(), 0);
-        candidatesCurrent_ = true;
-        windowStart_ = 0; selected_ = 0;
-        updateUI(*ic);
-    }
     void preparePhraseCodes() {
         commonPhrases_.reload();
         const auto version=commonPhrases_.revision();
@@ -1145,12 +1132,12 @@ private:
     }
     void cloudTick() {
         auto *ic=icRef_.get();
-        if(!ic || !eng_.cloudConfigured() || !tokensEnabled_ || !eng_.idle() || syncPaused_ || pending_ || phraseMode_ ||
+        if(!ic || !eng_.cloudConfigured() || !tokensEnabled_ || !eng_.idle() || syncPaused_ || pending_ ||
             buf_.size()<4 || !candidatesCurrent_ || cloudAppliedRevision_==revision_ ||
             windowStart_ || selected_ || now(CLOCK_MONOTONIC)-lastKeyTime_>2500000)return;
         auto ref=icRef_;const auto revision=revision_,epoch=epoch_;auto handler=candidateHandler();
         eng_.send("R",[this,ref,revision,epoch,handler](const std::string &resp){
-            if(resp=="UNCHANGED" || resp.empty() || ref.get()!=icRef_.get() || revision!=revision_ || epoch!=epoch_ || buf_.empty() || phraseMode_ || windowStart_ || selected_)return;
+            if(resp=="UNCHANGED" || resp.empty() || ref.get()!=icRef_.get() || revision!=revision_ || epoch!=epoch_ || buf_.empty() || windowStart_ || selected_)return;
             if(resp.rfind("CAND\t",0)==0){cloudAppliedRevision_=revision;handler(resp);}
         });
     }
@@ -1200,7 +1187,7 @@ private:
         if (event.isRelease()) return false;
         const bool plain = !event.key().states().testAny(KeyStates{KeyState::Ctrl, KeyState::Alt,
             KeyState::Super, KeyState::Super2, KeyState::Meta, KeyState::Hyper, KeyState::Hyper2, KeyState::Mod5});
-        if (!buf_.empty() || pending_ || phraseMode_) { resetDigitRun(ic); return false; }
+        if (!buf_.empty() || pending_) { resetDigitRun(ic); return false; }
         if (!digitHits_.empty() && plain) {
             if (sym == FcitxKey_Return || sym == FcitxKey_KP_Enter) {
                 commitDigitPhrase(ic, digitSelected_); event.filterAndAccept(); return true;
@@ -1227,7 +1214,6 @@ private:
 
     void clearAll(InputContext *ic = nullptr) {
         digitRun_.clear(); digitHits_.clear(); digitSelected_ = 0;
-        phraseMode_ = false;
         cancelPending();
         ++epoch_;
         ++revision_;
@@ -1262,38 +1248,6 @@ void WeTypeEngine::processKey(KeyEvent &event) {
     if (icRef_.get() != ic) clearAll();
     icRef_ = ic->watch();
     if (digitPhraseKey(event, ic)) return;
-
-    // 独立常用语模式支持官方数字编码，避免与拼音数字选词发生冲突。
-    if (event.key().check(FcitxKey_F8) && !pending_ && buf_.empty()) {
-        if (!event.isRelease()) {
-            clearAll(ic); phraseMode_ = true; ++revision_; refreshPhrases(ic);
-        }
-        event.filterAndAccept(); return;
-    }
-    if (phraseMode_) {
-        if (event.isRelease()) { event.filterAndAccept(); return; }
-        if (event.key().states().testAny(KeyStates{KeyState::Ctrl, KeyState::Alt, KeyState::Super})) return;
-        if (sym == FcitxKey_Escape) clearAll(ic);
-        else if (sym == FcitxKey_BackSpace) {
-            if (!buf_.empty()) buf_.pop_back(); refreshPhrases(ic);
-        } else if (sym == FcitxKey_space || sym == FcitxKey_Return) {
-            if (!cands_.empty()) commitCandidate(ic, selected_);
-        } else if (sym == FcitxKey_Down || sym == FcitxKey_Up) {
-            if (!cands_.empty()) {
-                const int n = static_cast<int>(cands_.size());
-                selected_ = (selected_ + n + (sym == FcitxKey_Down ? 1 : -1)) % n;
-                windowStart_ = selected_ / pageSize() * pageSize(); updateUI(*ic);
-            }
-        } else if ((sym >= FcitxKey_a && sym <= FcitxKey_z) ||
-                   (sym >= FcitxKey_A && sym <= FcitxKey_Z) ||
-                   (sym >= FcitxKey_0 && sym <= FcitxKey_9)) {
-            if (buf_.size() < 128) {
-                buf_ += static_cast<char>(sym >= FcitxKey_A && sym <= FcitxKey_Z ? sym + 32 : sym);
-                refreshPhrases(ic);
-            }
-        }
-        event.filterAndAccept(); return;
-    }
 
     if (pending_) {
         const bool shortcut = event.key().states().testAny(KeyStates{

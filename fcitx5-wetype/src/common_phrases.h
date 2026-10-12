@@ -36,12 +36,6 @@ public:
         ++revision_; stamp_ = info.st_mtim.tv_sec; nano_ = info.st_mtim.tv_nsec;
         return true;
     }
-    std::vector<std::string> lookup(const std::string &prefix) {
-        reload(); std::vector<std::string> result;
-        for (const auto &item : entries_)
-            if (item.first.rfind(prefix, 0) == 0) result.push_back(item.second);
-        return result;
-    }
     const auto &entries() const { return entries_; }
     uint64_t revision() const { return revision_; }
     void setRecommendation(size_t index, uint64_t revision, std::string code) {
