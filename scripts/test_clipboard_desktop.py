@@ -46,7 +46,8 @@ def main():
             env.update(XDG_RUNTIME_DIR=str(runtime), WLR_BACKENDS='headless', WLR_RENDERER='pixman', WLR_LIBINPUT_NO_DEVICES='1')
             server = subprocess.Popen(['sway', '-c', str(config)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            for _ in range(50):
+            # CI 机器上虚拟桌面启动偶尔超过 5 秒，最多等 30 秒。
+            for _ in range(300):
                 ready = display_file.read_text().strip() if args.backend == 'x11' else next((p.name for p in runtime.glob('wayland-*') if not p.name.endswith('.lock')), '')
                 if ready:
                     break
@@ -89,7 +90,11 @@ def main():
             print(args.backend + ' 隔离桌面：双向 UTF-8、换行、首启基线、防回传、文件过滤均通过；官方网络请求为 0。')
         finally:
             server.terminate()
-            server.wait(timeout=5)
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait()
 
 
 if __name__ == '__main__':
