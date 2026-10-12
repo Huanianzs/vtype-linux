@@ -110,5 +110,9 @@ class DesktopClipboard:
         # 工具后台持有复制内容；正文只经 stdin，不出现在进程参数和日志中。
         subprocess.run(command, input=text.encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        env=self.env, timeout=2, check=True)
-        if self.read() != text:
-            raise RuntimeError('系统剪贴板未确认写入')
+        # xclip 先 fork 再接管选区，命令返回时新内容可能尚未生效。
+        deadline = time.monotonic() + 1
+        while self.read() != text:
+            if time.monotonic() > deadline:
+                raise RuntimeError('系统剪贴板未确认写入')
+            time.sleep(.05)

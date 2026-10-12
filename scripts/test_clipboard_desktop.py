@@ -16,6 +16,15 @@ from 剪贴板同步 import Synchronizer
 from test_clipboard_sync import MemoryGroup
 
 
+def settle(check):
+    """剪贴板工具在后台接管选区，等待外部写入生效。"""
+    deadline = time.monotonic() + 2
+    while not check():
+        if time.monotonic() > deadline:
+            raise AssertionError('剪贴板写入未生效')
+        time.sleep(.05)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backend', choices=('x11', 'wayland'), default='x11')
@@ -51,6 +60,8 @@ def main():
             if args.backend == 'x11':
                 subprocess.run(['xclip', '-selection', 'primary', '-in'], input=b'primary-stays-local', env=env, check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                settle(lambda: subprocess.run(['xclip', '-selection', 'primary', '-out'], env=env, capture_output=True).stdout
+                       == b'primary-stays-local')
             desktop.write('已有文本\n', expected=desktop.read())
             group = MemoryGroup()
             sync = Synchronizer(desktop, group, Path(directory) / 'cursor.json')
@@ -72,7 +83,7 @@ def main():
             uri_command = ['xclip', '-selection', 'clipboard', '-in', '-target', 'text/uri-list'] if args.backend == 'x11' else ['wl-copy', '--type', 'text/uri-list']
             subprocess.run(uri_command,
                            input=b'file:///synthetic/example\n', env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            assert desktop.read() is None
+            settle(lambda: desktop.read() is None)
             sync.step()
             assert len(group.sent) == 1
             print(args.backend + ' 隔离桌面：双向 UTF-8、换行、首启基线、防回传、文件过滤均通过；官方网络请求为 0。')
