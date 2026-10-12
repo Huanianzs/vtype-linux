@@ -809,6 +809,37 @@ private:
     // earlier prefix of the pinyin still being typed is shown as a
     // non-selectable preview so fast typing keeps refreshing the panel; other
     // stale replies are ignored.
+    // 输入带大写字母时按英文处理：引擎返回的英文候选一律小写（词库里的 BevFusion 会给出
+    // bevfusion），把已输入部分的大小写套上去并排到最前；没有英文候选时原样输入排第一。
+    void applyTypedCase(const std::string &typed) {
+        if (std::none_of(typed.begin(), typed.end(), [](char c) { return c >= 'A' && c <= 'Z'; })) return;
+        const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
+        std::vector<size_t> english;
+        for (size_t i = 0; i < cands_.size(); ++i) {
+            auto &text = cands_[i];
+            if (covers_[i] > 0 && static_cast<size_t>(covers_[i]) < typed.size()) continue;
+            if (text.size() < typed.size() || !std::all_of(text.begin(), text.end(), [](char c) {
+                    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); })) continue;
+            if (!std::equal(typed.begin(), typed.end(), text.begin(),
+                            [&](char a, char b) { return lower(a) == lower(b); })) continue;
+            std::copy(typed.begin(), typed.end(), text.begin());
+            english.push_back(i);
+        }
+        std::vector<std::string> texts; std::vector<int> covers, indices;
+        if (english.empty()) { texts.push_back(typed); covers.push_back(static_cast<int>(typed.size())); indices.push_back(-1); }
+        for (int pass = 0; pass < 2; ++pass)
+            for (size_t i = 0; i < cands_.size(); ++i) {
+                if ((std::find(english.begin(), english.end(), i) != english.end()) != (pass == 0)) continue;
+                texts.push_back(cands_[i]); covers.push_back(covers_[i]); indices.push_back(engineIndices_[i]);
+            }
+        cands_ = std::move(texts); covers_ = std::move(covers); engineIndices_ = std::move(indices);
+        for (size_t i = cands_.size(); i-- > 1;) {
+            if (std::find(cands_.begin(), cands_.begin() + i, cands_[i]) == cands_.begin() + i) continue;
+            cands_.erase(cands_.begin() + i); covers_.erase(covers_.begin() + i);
+            engineIndices_.erase(engineIndices_.begin() + i);
+        }
+    }
+
     EngineProc::Handler candidateHandler() {
         auto ref = icRef_;
         const auto expectedEpoch = epoch_;
@@ -874,6 +905,7 @@ private:
                     engineIndices_.push_back(static_cast<int>(engineIndices_.size()));
                 }
             }
+            applyTypedCase(expectedBuf);
             if (current) {
                 auto phrases = commonPhrases_.automaticLookup(buf_);
                 // 常用语不交给普通词库学习；保留每个原生候选的真实序号。
@@ -910,7 +942,10 @@ private:
         preparePhraseCodes();
         WLOG("send keys chars=%zu buffer_len=%zu revision=%llu\n", keys.size(),
              buf_.size(), static_cast<unsigned long long>(revision_));
-        eng_.send("B " + keys, candidateHandler());
+        // 引擎按小写拼音检索（大写会被当作新音节开头，补全失效），大小写由 applyTypedCase 还原。
+        std::string lowered = keys;
+        for (auto &c : lowered) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+        eng_.send("B " + lowered, candidateHandler());
     }
 
     struct QueuedKey {
@@ -1329,16 +1364,15 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             ic->propertyFor(&punctuationFactory_)->language = wetype::TextLanguage::Latin;
             ic->propertyFor(&punctuationFactory_)->lastDigit = true;
         }
-        // 没有拼音时，Shift/CapsLock 产生的大写字母直接交给应用上屏；
-        // 拼音输入中途仍按小写拼音处理。Ctrl/Alt/Super/Meta 组合键已在上面放行。
-        if (buf_.empty() && sym >= FcitxKey_A && sym <= FcitxKey_Z) return;
+        // 字母保留大小写送给引擎（如 BevFusion 可匹配词库里的英文词）。
+        // Ctrl/Alt/Super/Meta 组合键已在上面放行。
         if ((sym >= FcitxKey_a && sym <= FcitxKey_z) ||
             (sym >= FcitxKey_A && sym <= FcitxKey_Z)) {
             if (buf_.empty()) recoveryTried_ = false;
             const bool replayBuffer = !eng_.alive() && !buf_.empty();
             char c = (sym >= FcitxKey_a && sym <= FcitxKey_z)
                          ? static_cast<char>('a' + (sym - FcitxKey_a))
-                         : static_cast<char>('a' + (sym - FcitxKey_A));
+                         : static_cast<char>('A' + (sym - FcitxKey_A));
             ensureEngine();
             ++revision_;
             buf_ += c;
