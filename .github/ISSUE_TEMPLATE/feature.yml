@@ -1,0 +1,17 @@
+name: 体验改进
+description: 按键习惯、候选显示、和手机不一致的地方、想要的功能
+labels: [enhancement]
+body:
+  - type: textarea
+    id: now
+    attributes:
+      label: 现在是什么样
+    validations:
+      required: true
+  - type: textarea
+    id: want
+    attributes:
+      label: 希望是什么样
+      description: 如果手机或 Mac 版微信输入法有对应行为，可以描述或截图
+    validations:
+      required: true

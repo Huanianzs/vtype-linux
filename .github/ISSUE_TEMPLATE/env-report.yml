@@ -1,0 +1,26 @@
+name: 环境报告
+description: 告诉我们你的环境装得上、能不能用（成功也欢迎）
+labels: [环境报告]
+body:
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: 发行版、桌面环境、X11/Wayland、Fcitx5 版本、CPU 架构
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: 哪些能用
+      options:
+        - label: 安装成功
+        - label: 本地输入
+        - label: 关联设备
+        - label: 云候选
+        - label: 词库同步
+        - label: 常用语
+  - type: textarea
+    id: notes
+    attributes:
+      label: 遇到的问题或备注

@@ -1,0 +1,38 @@
+name: 问题反馈
+description: 装不上、打不了字、候选或同步不对
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请不要粘贴设备身份（`~/.local/state/wetype-ime/account`）、个人词库或未检查过的 `harness.log`。
+        用 agent 的话，可以让它按仓库 AGENTS.md 的“报告问题”一节收集下面的信息。
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: 发行版、桌面环境、X11/Wayland、Fcitx5 版本、CPU 架构、本项目的提交号，以及 `wetype-cloud.py status` 的输出
+      placeholder: |
+        Ubuntu 22.04, KDE Plasma, X11, Fcitx5 5.0.14, x86_64, 提交 5bab0ac
+        {"paired": true, "cloud_enabled": true, ...}
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 在哪个应用里，按了什么
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望和实际
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 相关日志
+      description: harness.log 或 Fcitx5 输出中的报错行（确认不含个人输入内容）
+      render: text

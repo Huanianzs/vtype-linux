@@ -21,7 +21,9 @@ def main():
         if not raw:
             continue
         relative = Path(raw.decode())
-        if FORBIDDEN.intersection(relative.parts) or relative.name in PRIVATE_NAMES:
+        # 根目录 AGENTS.md 是公开的 agent 指南；其他位置的 AGENTS.md 多为私有项目记录。
+        public_guide = relative == Path('AGENTS.md')
+        if FORBIDDEN.intersection(relative.parts) or (relative.name in PRIVATE_NAMES and not public_guide):
             problems.append((str(relative), '私有或构建目录'))
         if relative.suffix.lower() in ('.apk', '.appimage', '.so', '.pem', '.key', '.pb', '.bin'):
             problems.append((str(relative), '二进制/私有文件类型'))

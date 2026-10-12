@@ -40,6 +40,5 @@ cloud.json
 common-phrases.bin
 *.pb
 
-# 本地协作约束与开发记录不属于公开发布内容。
-/AGENTS.md
+# 本地开发记录不属于公开发布内容；根目录 AGENTS.md 是公开的 agent 指南。
 /context.md
