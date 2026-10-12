@@ -203,6 +203,15 @@ else
   # 仅停止由此用户安装路径生成的刷新任务；其他同名服务不动。
   if [ "$scope" = user ]; then
     units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    if [ -f "$units/wetype-clipboard.service" ] &&
+       grep -Fq '# VType clipboard service' "$units/wetype-clipboard.service" &&
+       grep -Fq "$eng/wetype-cloud.py" "$units/wetype-clipboard.service"; then
+      # 用户服务管理器不可用（如 SSH 会话）时也继续卸载。
+      python3 "$eng/wetype-cloud.py" clipboard disable || true
+      systemctl --user disable --now wetype-clipboard.service 2>/dev/null || true
+      rm -f "$units/wetype-clipboard.service"
+      systemctl --user daemon-reload 2>/dev/null || true
+    fi
     if [ -f "$units/wetype-sync.service" ] &&
        grep -Fq "$eng/cloud/会话与常用语刷新.py" "$units/wetype-sync.service"; then
       systemctl --user disable --now wetype-sync.timer

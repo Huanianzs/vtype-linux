@@ -152,7 +152,7 @@ class Probe:
         self.task += 1
         return data
 
-    def api(self, command, body, service_command=4814):
+    def api(self, command, body, service_command=4814, *, persist_errors=True):
         uin = self.identity["uin"]
         device = "UniClipboard;research;standalone;"+self.identity["device_name"]+";sdk 34;PHONE"
         entries = {"vid":str(uin), "app_ver":VERSION, "platform":"1", "device":device, "channelid":"", "client_timestamp":str(self.timestamp())}
@@ -162,11 +162,14 @@ class Probe:
         parsed = fields(raw)
         result = one(parsed,6,b"")
         if not result:
-            save_private('api-'+str(service_command)+'-'+str(command)+'-empty.pb',raw)
+            if persist_errors:
+                save_private('api-'+str(service_command)+'-'+str(command)+'-empty.pb',raw)
             raise ValueError("no business response: fields="+str(list(parsed)))
         if result.startswith(b'['):
-            save_private('api-'+str(command)+'-error.bin',result)
-            raise ValueError('官方业务接口返回错误，响应已保存在账户状态目录')
+            if persist_errors:
+                save_private('api-'+str(command)+'-error.bin',result)
+                raise ValueError('官方业务接口返回错误，响应已保存在账户状态目录')
+            raise ValueError('官方业务接口返回错误')
         return result
 
     def group(self):

@@ -6,7 +6,7 @@
   旧 harness 错写成 _Z17；额外 native 探针 listener 又获得未归还的第二份
   iterator。daemon 改由 JNI onBatchEvent 通知，正确归还唯一 listener 的
   iterator 即可调用引擎自身析构，释放惰性协程图。证据/复测见
-  docs/engine-iterator-leak.md、scripts/test_iterator_ownership.py。
+  docs/上游/engine-iterator-leak.md、scripts/test_iterator_ownership.py。
 
 以下 blob 仅保留用于历史实验复现，--accept-risk 不代表可部署：
   · free：裸释放破坏所有权；第 10 次搜索挂死。还存在未登记 delete 被吞、

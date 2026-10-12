@@ -16,7 +16,10 @@ jobs:
       - name: 安装检查依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake libfcitx5core-dev python3-cryptography
+          sudo apt-get install -y build-essential cmake libfcitx5core-dev python3-cryptography xvfb xclip
+      - name: 安装 Wayland 隔离检查依赖
+        if: matrix.os == 'ubuntu-24.04'
+        run: sudo apt-get install -y sway wl-clipboard
       - name: 编译宿主插件并检查
         run: |
           cmake -S fcitx5-wetype -B build -DCMAKE_BUILD_TYPE=Release
@@ -27,3 +30,8 @@ jobs:
           python3 scripts/check-public-source.py
           python3 -m compileall -q cloud scripts
           bash -n scripts/20_build.sh scripts/e1_appdir.sh scripts/appimage_manage.sh
+      - name: X11 剪贴板双向检查（不联网）
+        run: python3 scripts/test_clipboard_desktop.py --backend x11
+      - name: Wayland 剪贴板双向检查（不联网）
+        if: matrix.os == 'ubuntu-24.04'
+        run: python3 scripts/test_clipboard_desktop.py --backend wayland
