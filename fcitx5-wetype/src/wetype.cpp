@@ -1329,8 +1329,9 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             ic->propertyFor(&punctuationFactory_)->language = wetype::TextLanguage::Latin;
             ic->propertyFor(&punctuationFactory_)->lastDigit = true;
         }
-        // Alphabet keys, including Shift/CapsLock symbols, become lowercase
-        // pinyin. Ctrl/Alt/Super/Meta shortcuts were passed through above.
+        // 没有拼音时，Shift/CapsLock 产生的大写字母直接交给应用上屏；
+        // 拼音输入中途仍按小写拼音处理。Ctrl/Alt/Super/Meta 组合键已在上面放行。
+        if (buf_.empty() && sym >= FcitxKey_A && sym <= FcitxKey_Z) return;
         if ((sym >= FcitxKey_a && sym <= FcitxKey_z) ||
             (sym >= FcitxKey_A && sym <= FcitxKey_Z)) {
             if (buf_.empty()) recoveryTried_ = false;
