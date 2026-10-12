@@ -61,7 +61,7 @@ class ClipboardCliTest(unittest.TestCase):
             self.assertEqual(config.stat().st_mode & 0o777, 0o600)
             unit = self.root / 'config/systemd/user/wetype-clipboard.service'
             self.assertIn('clipboard run', unit.read_text())
-            self.assertIn('graphical-session.target', unit.read_text())
+            self.assertIn('WantedBy=graphical-session.target default.target', unit.read_text())
             self.assertIn('微信输入法服务器', output.getvalue())
             self.assertTrue(any('enable' in call.args[0] for call in run.call_args_list))
             setup.main(self.args + ['clipboard', 'disable'])

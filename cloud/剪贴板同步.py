@@ -144,7 +144,9 @@ def configure_service(state, entry):
     if unit.exists() and '# VType clipboard service' not in unit.read_text():
         raise RuntimeError('wetype-clipboard.service 已被其他服务使用')
     body = ('# VType clipboard service\n[Unit]\nDescription=WeType clipboard text sync\n'
-            'PartOf=graphical-session.target\nAfter=graphical-session.target\n'
+            # 不少桌面（如 KDE 5.24 默认会话）不激活 graphical-session.target，同时挂到 default.target；
+            # 早于桌面启动时拿不到显示环境会失败退出，由 Restart 每 10 秒重试，直到桌面就绪。
+            'PartOf=graphical-session.target\nAfter=graphical-session.target\nStartLimitIntervalSec=0\n'
             '[Service]\nType=simple\nUMask=0077\nNoNewPrivileges=yes\nRestart=on-failure\nRestartSec=10\n'
             # 剪贴板工具后台持有已收到的文字；停同步不终止其所有权进程。
             'KillMode=process\n'
@@ -152,7 +154,7 @@ def configure_service(state, entry):
             'Environment=' + quote_unit('PATH=' + os.environ.get('PATH', '/usr/bin:/bin')) + '\n'
             'ExecStart=' + quote_unit(sys.executable) + ' ' + quote_unit(entry) +
             ' --state ' + quote_unit(state) + ' clipboard run\n'
-            '[Install]\nWantedBy=graphical-session.target\n')
+            '[Install]\nWantedBy=graphical-session.target default.target\n')
     atomic(unit, body.encode())
 
 
@@ -277,7 +279,7 @@ def main(argv=None, state=None, entry=None):
         configure_service(state, entry)
         value = {'enabled': True, 'state_dir': str(state), 'backend': args.backend}
         print('启用期间，新复制的文本会发给微信输入法服务器，并接收同组设备的文本。')
-        print('请先在官方客户端开启跨设备复制粘贴；图片、文件及超过 256 KiB 的文本不会同步。')
+        print('请先在官方客户端开启跨设备复制粘贴；图片和文件不会同步，超过 256 KiB 的文本只接收不发送。')
         try:
             names = [name for name in ('DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'XDG_SESSION_TYPE') if os.environ.get(name)]
             subprocess.run(['systemctl', '--user', 'import-environment', *names], check=True, timeout=15)
