@@ -70,10 +70,17 @@ def main(argv=None):
     commands.add_parser('refresh', help='刷新已有身份、组信息和常用语；不读写词库')
     commands.add_parser('status', help='显示配置状态，不输出密钥或个人词条')
     commands.add_parser('disable', help='关闭云服务及刷新任务，保留身份和个人词库')
+    clipboard = commands.add_parser('clipboard', help='独立管理跨设备文本剪贴板同步', add_help=False)
+    clipboard.add_argument('-h', '--help', dest='clipboard_help', action='store_true')
+    clipboard.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     p.STATE = args.state.expanduser().resolve()
     os.environ['WETYPE_STATE_DIR'] = str(p.STATE)
     path = config_path()
+    if args.action == 'clipboard':
+        from 剪贴板同步 import main as clipboard_main
+        return clipboard_main(['--help'] if args.clipboard_help else args.arguments,
+                              state=p.STATE, entry=Path(sys.argv[0]).resolve())
     if args.action == 'status':
         config = json.loads(path.read_text()) if path.exists() else {}
         print(json.dumps({'paired': (p.STATE / 'identity.json').is_file(),
@@ -82,12 +89,14 @@ def main(argv=None):
                           'snapshot_download': bool(config.get('native_snapshot_download'))}, ensure_ascii=False))
         return 0
     if args.action == 'disable':
+        from 剪贴板同步 import disable as disable_clipboard
+        disable_clipboard()
         if path.exists():
             config = json.loads(path.read_text()); config['enabled'] = False
             write_doc(path, config)
         subprocess.run(['systemctl', '--user', 'disable', '--now', 'wetype-sync.timer'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print('云服务已关闭，身份与词库保留；重启 Fcitx5 后生效。')
+        print('云服务和剪贴板同步已关闭，身份与词库保留；引擎云服务在重启 Fcitx5 后生效。')
         return 0
     p.STATE.mkdir(parents=True, exist_ok=True, mode=0o700); p.STATE.chmod(0o700)
     if args.action == 'pair':
