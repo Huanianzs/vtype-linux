@@ -1,36 +1,63 @@
 # Nix / NixOS
 
-提供 x86_64-linux 独立包，构建 Fcitx5 插件、Android/bionic 宿主并固定静态 QEMU、
-Python、OpenSSL、wxc 0.1.0 与 Snappy 的运行路径。
+提供 x86_64-linux 独立包，包含 Fcitx5 插件、ARM64 Android/bionic 宿主、
+AOSP 运行库、Android 接口替身、云桥接库、静态 QEMU 和 wxc 0.1.0。
+Python、OpenSSL、Snappy 与客户端均使用包内固定路径。
 
-## 安装
+## 首次安装
+
+系统需先启用 Fcitx5。安装包后，初始化命令从腾讯服务器下载微信输入法 3.5.4 APK，
+校验固定 SHA-256，在用户机器上提取引擎和词库并应用上游引擎补丁：
 
 ```sh
-nix build
 nix profile install .#vtype-linux
+wetype-setup
+wetype-check
 ```
 
-腾讯引擎库、词库和 AOSP 系统运行库仍需按[安装与使用](安装与使用.md)准备在
-`~/.local/lib/wetype-ime/arm64`；本包不会下载或打包腾讯 APK，不保存设备身份。
-已准备好的运行时可以直接复用。首次准备运行时的 Nix 自动化仍待补齐。
+下载约 214 MB，后续可复用缓存；已有 APK 时执行 `wetype-setup --apk /path/to/wetype_3.5.4.apk`。
+APK、腾讯引擎与词库不会进入 Nix 包；AOSP 运行库及本项目桥接库随包提供。
+`nix run .#wetype-setup` 和 `nix run .#wetype-check` 也可直接使用。
 
-将本包的 `share` 目录加入启动 Fcitx5 的 `XDG_DATA_DIRS`，例如独立 profile 安装后
-加入 `$HOME/.nix-profile/share`。插件注册使用绝对库路径。Fcitx5 设置里添加“微信拼音”
-并重启后可切换使用。若以前通过 AppImage 安装过插件，请先备份并停用它的用户级
-注册文件，避免 `XDG_DATA_HOME/fcitx5` 中的旧注册覆盖本包。
+默认运行目录为 `~/.local/lib/wetype-ime/arm64`，可用 `WETYPE_ENGINE_DIR` 或
+`wetype-setup --engine-dir /path/to/runtime` 指定。使用自定义目录时，须将
+`WETYPE_ENGINE_DIR` 同时传给 Fcitx5、`wetype-cloud` 和自检命令。
+
+将 Nix profile 的 `share` 加入启动 Fcitx5 的 `XDG_DATA_DIRS`，通常为
+`$HOME/.nix-profile/share`。插件以绝对库路径注册。启动或重启 Fcitx5，
+在输入法设置中添加“微信拼音”，即可使用：
 
 ```sh
 fcitx5-remote -s wetype-im
 wetype-demo nihao
 ```
 
-宿主程序由 Nix 包提供，无需覆盖用户运行时中的旧宿主。引擎库、词库位置通过
-`WETYPE_ENGINE_DIR` 指定，默认使用上述用户目录；个人词库位置保持上游默认值。
+`wetype-check` 使用临时个人词库验证输入、选词、学习和重启；`wetype-demo` 使用
+正常的用户词库。初始化不会启用云功能，也不会自动修改 Fcitx5 分组或重启输入法。
+
+## 从旧 AppImage 或手动安装迁移
+
+先退出 Fcitx5 和其他使用该引擎的命令，再执行：
+
+```sh
+wetype-setup --migrate-fcitx
+wetype-check
+```
+
+该命令会重新准备与新版 bionic 宿主配套的引擎库，将旧运行目录保存在同级
+`arm64-backup.*` 目录，并保留已有预置词库文件。用户级的 `wetype.conf` 与
+`wetype-im.conf` 注册文件会移到 `XDG_DATA_HOME/fcitx5/wetype-backup.*`，
+避免遮蔽 Nix 包的插件。备份不会自动删除。
+
+APK 校验或补丁失败时保留原运行目录和注册文件。引擎仍在运行时拒绝替换。
+个人学习词库位于 `XDG_DATA_HOME/wetype-ime/dict`，设备身份位于
+`XDG_STATE_HOME/wetype-ime/account`；初始化不访问这两个目录。
+
+更新 Nix 包后，再退出 Fcitx5 并运行 `wetype-setup`，刷新运行目录中的包资源链接。
 
 ## 云功能
 
-包内已提供 wxc 0.1.0，云命令默认使用该版本，无需另外运行 npm 安装。
-也可用 `WETYPE_WXC` 指定其他客户端：
+包内已提供 wxc 0.1.0，无需 Node.js/npm。云功能需要用户关联官方客户端：
 
 ```sh
 wetype-cloud pair
@@ -38,12 +65,17 @@ wetype-cloud enable --timer
 wetype-cloud status
 ```
 
-手机/电脑确认关联后，重启 Fcitx5。身份保存在用户私有目录，剪贴板仍需单独启用。
-定时任务使用当前 Python 解释器与协议脚本，保留 OpenSSL/wxc 的 PATH 和
-`WETYPE_SNAPPY_LIBRARY` 与包内 wxc 的绝对路径，不依赖 `/usr/bin/python3`。
+手机/电脑确认关联后，重启 Fcitx5。身份保存在用户私有目录；剪贴板互通需另外执行
+`wetype-cloud clipboard enable`，并安装 Wayland 的 `wl-clipboard` 或 X11 的 `xclip`。
+关联后的数据传输行为见 [README](../README.md) 和 [剪贴板互通](剪贴板互通.md)。
 
-`nix run .#wxc -- --version` 可单独检查客户端。Nix 包直接使用上游发布的 Linux
-x64 Rust 可执行文件，修复其 ELF 解释器和库搜索路径，运行时无需 Node.js。
+云代理、桥接库和协议脚本与本包配套。定时刷新服务使用当前 Python、包内协议脚本，
+保留 OpenSSL/wxc 的 PATH、`WETYPE_SNAPPY_LIBRARY` 和 wxc 绝对路径。
+剪贴板后台服务也保留 Snappy 路径。
+可用 `WETYPE_WXC` 显式指定其他客户端。
+
+`nix run .#wxc -- --version` 可单独检查客户端。QEMU 和 bionic 默认使用包内路径；
+`QEMU_AARCH64` 和 `WETYPE_SYSROOT` 可用于显式覆盖。
 
 ## 开发与验证
 
@@ -54,14 +86,18 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 tests/test_snapshot_transport.py
+python3 scripts/check-public-source.py
+python3 scripts/test_clipboard_desktop.py --backend x11
 ```
 
-`nix build` 同样运行 CTest 和不联网的 Python 检查。真实引擎自检可指定本包宿主：
+`nix build` 运行 CTest、离线 Python 测试、包内运行库闭包和命令入口检查。
+真实引擎需要先执行初始化，可运行 `wetype-check --idle-seconds 85`。
+空用户目录安装与私有 Fcitx 检查可在开发环境中运行：
 
 ```sh
-python3 scripts/test_bionic_daemon.py --engine-dir ~/.local/lib/wetype-ime/arm64 \
-  --harness ~/.nix-profile/libexec/wetype-harness
+python3 nix/check-install.py --package ./result --apk /path/to/wetype_3.5.4.apk
 ```
 
-当前包只声明 x86_64-linux。Ubuntu 安装方式保持原有流程；共享 Snappy 加载代码
-在未指定环境变量时继续查找系统库，缺失时返回明确错误。
+该检查覆盖重复初始化、数据保留、云桥接库加载、本地与关闭联网的云代理入口，
+使用临时 HOME 和私有 D-Bus，不关联设备。
+当前只声明 x86_64-linux；Ubuntu 的 AppImage 安装流程保持不变。

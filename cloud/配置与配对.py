@@ -63,7 +63,8 @@ def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', type=Path, default=p.STATE, help='私有设备身份目录；关联后保持不变')
-    parser.add_argument('--runtime', type=Path, default=Path.home() / '.local/lib/wetype-ime/arm64')
+    parser.add_argument('--runtime', type=Path, default=Path(os.environ.get(
+        'WETYPE_ENGINE_DIR', Path.home() / '.local/lib/wetype-ime/arm64')))
     commands = parser.add_subparsers(dest='action', required=True)
     pair = commands.add_parser('pair', help='用官方客户端六位关联码加入设备组')
     pair.add_argument('--code', help='省略时交互输入')

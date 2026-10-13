@@ -28,6 +28,8 @@
         wxc = { type = "app"; program = "${wxc}/bin/wxc"; };
         wetype-demo = { type = "app"; program = "${package}/bin/wetype-demo"; };
         wetype-cloud = { type = "app"; program = "${package}/bin/wetype-cloud"; };
+        wetype-setup = { type = "app"; program = "${package}/bin/wetype-setup"; };
+        wetype-check = { type = "app"; program = "${package}/bin/wetype-check"; };
       };
       devShells.${system}.default = pkgs.mkShell {
         packages = [
@@ -35,6 +37,9 @@
           pkgs.fcitx5
           pkgs.pkg-config
           pkgs.openssl
+          pkgs.xorg-server
+          pkgs.xclip
+          pkgs.wl-clipboard
           wxc
           (pkgs.python3.withPackages (ps: [ ps.cryptography ps.dbus-python ps.pygobject3 ]))
         ];
