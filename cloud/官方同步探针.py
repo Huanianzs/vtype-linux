@@ -108,6 +108,24 @@ def save_private(name, data):
     with os.fdopen(fd, "wb") as output:
         output.write(data)
 
+def snappy_decompress(data):
+    # Nix 等平台可显式指定共享库，传统发行版仍使用系统库查找。
+    library = os.environ.get("WETYPE_SNAPPY_LIBRARY") or ctypes.util.find_library("snappy")
+    if not library:
+        raise RuntimeError("找不到 Snappy 共享库；请安装 libsnappy 或设置 WETYPE_SNAPPY_LIBRARY")
+    lib = ctypes.CDLL(library)
+    lib.snappy_uncompressed_length.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    lib.snappy_uncompressed_length.restype = ctypes.c_int
+    lib.snappy_uncompress.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+    lib.snappy_uncompress.restype = ctypes.c_int
+    size = ctypes.c_size_t()
+    if lib.snappy_uncompressed_length(data, len(data), ctypes.byref(size)) != 0 or size.value > 2*1024*1024:
+        raise ValueError("invalid snappy length")
+    output = ctypes.create_string_buffer(size.value)
+    if lib.snappy_uncompress(data, len(data), output, ctypes.byref(size)) != 0:
+        raise ValueError("invalid snappy payload")
+    return output.raw[:size.value]
+
 class Probe:
     def __init__(self, identity):
         self.identity = identity
@@ -139,14 +157,7 @@ class Probe:
         if encrypted:
             data = aes(data, self.key, False)
         if compression == "2":
-            lib = ctypes.CDLL(ctypes.util.find_library("snappy"))
-            size = ctypes.c_size_t()
-            if lib.snappy_uncompressed_length(data, ctypes.c_size_t(len(data)), ctypes.byref(size)) != 0 or size.value > 2*1024*1024:
-                raise ValueError("invalid snappy length")
-            output = ctypes.create_string_buffer(size.value)
-            if lib.snappy_uncompress(data, ctypes.c_size_t(len(data)), output, ctypes.byref(size)) != 0:
-                raise ValueError("invalid snappy payload")
-            data = output.raw[:size.value]
+            data = snappy_decompress(data)
         elif compression != "1":
             raise ValueError("unknown response compression")
         self.task += 1

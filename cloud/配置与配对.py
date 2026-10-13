@@ -45,7 +45,10 @@ def configure_timer(runtime):
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=90\n'
             'Environment=' + quote_unit('WETYPE_STATE_DIR=' + str(p.STATE)) + '\n'
             'Environment=' + quote_unit('WETYPE_WXC=' + wxc_binary()) + '\n'
-            'ExecStart=/usr/bin/python3 ' + quote_unit(runtime / 'cloud/会话与常用语刷新.py') + '\n'
+            'Environment=' + quote_unit('PATH=' + os.environ.get('PATH', '/usr/bin:/bin')) + '\n'
+            + ('Environment=' + quote_unit('WETYPE_SNAPPY_LIBRARY=' + os.environ['WETYPE_SNAPPY_LIBRARY']) + '\n'
+               if os.environ.get('WETYPE_SNAPPY_LIBRARY') else '')
+            + 'ExecStart=' + quote_unit(sys.executable) + ' ' + quote_unit(Path(__file__).with_name('会话与常用语刷新.py')) + '\n'
             'NoNewPrivileges=yes\n')
     timer = ('[Unit]\nDescription=WeType session and common phrase refresh timer\n'
              '[Timer]\nOnStartupSec=1min\nOnUnitInactiveSec=5min\nRandomizedDelaySec=30\n'
@@ -123,7 +126,7 @@ def main(argv=None):
             if not (runtime / relative).is_file():
                 raise RuntimeError('运行时缺少 ' + relative + '，请先安装本增强版运行时')
         refresh_client(); query_group()
-        config = {'enabled': True, 'protocol_dir': str(runtime / 'cloud'), 'state_dir': str(p.STATE),
+        config = {'enabled': True, 'protocol_dir': str(Path(__file__).resolve().parent), 'state_dir': str(p.STATE),
                   'shim': str(runtime / 'libwetype-cloud.so'), 'native_sync': True,
                   'native_snapshot_download': True}
         if args.timer:

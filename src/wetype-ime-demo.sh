@@ -14,7 +14,7 @@ if [ -z "$ENG" ]; then
   else ENG="$(cd "$SELF_DIR/.." && pwd)"
   fi
 fi
-HARNESS="$ENG/harness/jinterop"
+HARNESS="${WETYPE_HARNESS:-$ENG/harness/jinterop}"
 [ -x "$HARNESS" ] || HARNESS="$ENG/wetype-harness"
 LIBDIR="$ENG/lib"
 [ -d "$LIBDIR" ] || LIBDIR="$ENG/runtime"   # 开发目录布局
