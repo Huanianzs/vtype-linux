@@ -7,7 +7,9 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      wxc = pkgs.callPackage ./nix/wxc.nix { };
       package = pkgs.callPackage ./nix/package.nix {
+        inherit wxc;
         src = pkgs.lib.cleanSourceWith {
           src = self;
           filter = path: type: pkgs.lib.cleanSourceFilter path type
@@ -18,10 +20,12 @@
     in
     {
       packages.${system} = {
+        inherit wxc;
         default = package;
         vtype-linux = package;
       };
       apps.${system} = {
+        wxc = { type = "app"; program = "${wxc}/bin/wxc"; };
         wetype-demo = { type = "app"; program = "${package}/bin/wetype-demo"; };
         wetype-cloud = { type = "app"; program = "${package}/bin/wetype-cloud"; };
       };
@@ -31,7 +35,7 @@
           pkgs.fcitx5
           pkgs.pkg-config
           pkgs.openssl
-          pkgs.nodejs_22
+          wxc
           (pkgs.python3.withPackages (ps: [ ps.cryptography ps.dbus-python ps.pygobject3 ]))
         ];
         WETYPE_SNAPPY_LIBRARY = "${pkgs.lib.getLib pkgs.snappy}/lib/libsnappy.so";

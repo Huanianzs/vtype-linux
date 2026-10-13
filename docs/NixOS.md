@@ -1,7 +1,7 @@
 # Nix / NixOS
 
 提供 x86_64-linux 独立包，构建 Fcitx5 插件、Android/bionic 宿主并固定静态 QEMU、
-Python、OpenSSL、Node.js 与 Snappy 的运行路径。
+Python、OpenSSL、wxc 0.1.0 与 Snappy 的运行路径。
 
 ## 安装
 
@@ -29,19 +29,21 @@ wetype-demo nihao
 
 ## 云功能
 
-先准备 wxc（包内提供 Node.js 22；在 `nix develop` 中也可使用 npm）：
+包内已提供 wxc 0.1.0，云命令默认使用该版本，无需另外运行 npm 安装。
+也可用 `WETYPE_WXC` 指定其他客户端：
 
 ```sh
-nix develop
-npm install --prefix "$HOME/.local/share/wetype-ime/tools" @mkdir700/wxc@0.1.0
 wetype-cloud pair
 wetype-cloud enable --timer
 wetype-cloud status
 ```
 
 手机/电脑确认关联后，重启 Fcitx5。身份保存在用户私有目录，剪贴板仍需单独启用。
-定时任务使用当前 Python 解释器与协议脚本，保留 OpenSSL/Node.js 的 PATH 和
-`WETYPE_SNAPPY_LIBRARY`，不依赖 `/usr/bin/python3`。
+定时任务使用当前 Python 解释器与协议脚本，保留 OpenSSL/wxc 的 PATH 和
+`WETYPE_SNAPPY_LIBRARY` 与包内 wxc 的绝对路径，不依赖 `/usr/bin/python3`。
+
+`nix run .#wxc -- --version` 可单独检查客户端。Nix 包直接使用上游发布的 Linux
+x64 Rust 可执行文件，修复其 ELF 解释器和库搜索路径，运行时无需 Node.js。
 
 ## 开发与验证
 

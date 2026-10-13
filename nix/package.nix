@@ -1,9 +1,10 @@
-{ lib, stdenv, fetchurl, cmake, fcitx5, pkgsStatic, python3, unzip, patchelf, zlib, openssl, snappy, nodejs_22, writeShellScript, src }:
+{ lib, stdenv, fetchurl, cmake, fcitx5, pkgsStatic, python3, unzip, patchelf, zlib, openssl, snappy, wxc, writeShellScript, src }:
 
 let
   python = python3.withPackages (ps: [ ps.cryptography ps.python-snappy ]);
   cloudPython = writeShellScript "wetype-cloud-python" ''
-    export PATH="${lib.makeBinPath [ openssl nodejs_22 ]}:$PATH"
+    export PATH="${lib.makeBinPath [ openssl wxc ]}:$PATH"
+    export WETYPE_WXC="''${WETYPE_WXC:-${wxc}/bin/wxc}"
     export WETYPE_SNAPPY_LIBRARY="${lib.getLib snappy}/lib/libsnappy.so"
     exec ${python}/bin/python3 "$@"
   '';
@@ -74,6 +75,7 @@ stdenv.mkDerivation {
     cp -r ../cloud "$out/share/vtype-linux/cloud"
     install -Dm644 ../scripts/wetype-cloud.py "$out/share/vtype-linux/wetype-cloud.py"
     mkdir -p "$out/bin"
+    ln -s ${wxc}/bin/wxc "$out/bin/wxc"
     cat > "$out/bin/wetype-demo" <<'EOF'
     #!${stdenv.shell}
     export WETYPE_ENGINE_DIR="''${WETYPE_ENGINE_DIR:-$HOME/.local/lib/wetype-ime/arm64}"
@@ -87,6 +89,13 @@ stdenv.mkDerivation {
     chmod +x "$out/bin/wetype-demo" "$out/bin/wetype-cloud"
     substituteInPlace "$out/bin/wetype-demo" --replace-fail '@out@' "$out"
     substituteInPlace "$out/bin/wetype-cloud" --replace-fail '@out@' "$out"
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    ${cloudPython} ../nix/check-wxc.py --package "$out" --wxc ${wxc}/bin/wxc
+    runHook postInstallCheck
   '';
 
   meta = {
