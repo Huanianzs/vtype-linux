@@ -1,11 +1,14 @@
 """离线词库工具：只对引擎已关闭的目录使用系统 LevelDB C API。"""
 import ctypes as C
 import ctypes.util
+import os
 from pathlib import Path
 
 class DB:
     def __init__(self,path,create=False):
-        self.lib=C.CDLL(ctypes.util.find_library('leveldb'))
+        library=os.environ.get('WETYPE_LEVELDB_LIBRARY') or ctypes.util.find_library('leveldb')
+        if not library:raise RuntimeError('找不到 LevelDB；请安装系统库或设置 WETYPE_LEVELDB_LIBRARY')
+        self.lib=C.CDLL(library)
         P=C.c_void_p; Z=C.c_size_t; S=C.c_char_p
         signatures={
           'options_create':([],P),'options_destroy':([P],None),

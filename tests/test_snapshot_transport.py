@@ -1,5 +1,5 @@
 """验证快照宿主传输：成功落盘、截断失败、越界路径、非官方地址和符号链接。全程不联网。"""
-import io,json,os,socket,stat,struct,tempfile,threading,sys
+import io,json,os,socket,stat,struct,tempfile,threading,sys,urllib.error
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'cloud'))
@@ -8,9 +8,14 @@ from 实时云桥接 import COS_MAGIC,cos_service
 class Response(io.BytesIO):
     def __init__(self,data,length):super().__init__(data);self.headers={'Content-Length':str(length)}
 class HTTP:
-    def __init__(self):self.calls=0;self.truncated=False
+    def __init__(self):self.calls=0;self.truncated=False;self.status=None
     def open(self,*args,**kwargs):
-        self.calls+=1;return Response(b'snapshot',20 if self.truncated else 8)
+        self.calls+=1
+        if self.status:
+            status,reason=self.status
+            raise urllib.error.HTTPError(args[0],status,'signed-secret',{},
+                io.BytesIO(('<Error><Code>'+reason+'</Code><Key>private-key</Key></Error>').encode()))
+        return Response(b'snapshot',20 if self.truncated else 8)
 
 def main():
     os.umask(0o077)
@@ -30,6 +35,14 @@ def main():
             http.truncated=True
             assert request(target)==-1 and target.read_bytes()==b'snapshot'
             assert not list(work.glob('.cos-download-*'))
+            for status,reason in [(404,'NoSuchKey'),(403,'SignatureDoesNotMatch')]:
+                http.status=(status,reason)
+                assert request(target)==-1 and target.read_bytes()==b'snapshot'
+                entry=json.loads((root/'log.jsonl').read_text().splitlines()[-1])
+                assert entry['http_status']==status and entry['cos_error_code']==reason
+                assert 'signature=test' not in json.dumps(entry) and 'private-key' not in json.dumps(entry)
+                assert not list(work.glob('.cos-download-*'))
+            http.status=None
             calls=http.calls
             assert request(root/'outside.bin')==-1 and not (root/'outside.bin').exists()
             assert request(target,'https://example.com/key?signature=test')==-1
@@ -37,6 +50,6 @@ def main():
             assert request(link)==-1 and outside.read_bytes()==b'keep'
             assert http.calls==calls
             client.shutdown(socket.SHUT_RDWR);client.close();thread.join(timeout=2);assert not thread.is_alive()
-        print(json.dumps({'checks':5,'passed':True,'real_network_requests':0,'file_mode':'600','partial_file_removed':True}))
+        print(json.dumps({'checks':7,'passed':True,'real_network_requests':0,'file_mode':'600','partial_file_removed':True}))
 
 if __name__=='__main__':main()
