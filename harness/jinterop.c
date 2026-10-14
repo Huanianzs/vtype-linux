@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include "dict_table.h"
+#include "pinyin_scheme.h"
 #include <sys/stat.h>
 #include <string.h>
 #include <dlfcn.h>
@@ -896,7 +897,8 @@ static void build_sesscfg_nested(void) {
     obj_set(&g_aug, "enable_keyboard_neighbour", 'z', (void *)1);
     obj_set(&g_aug, "enable_insert_at_middle", 'z', (void *)1);
     obj_set(&g_aug, "enable_skip", 'z', (void *)1);
-    obj_set(&g_aug, "double_pin_solution", 'i', (void *)0);
+    const int double_pin_solution = wetype_double_pin_solution(getenv("WETYPE_DOUBLE_PIN"));
+    obj_set(&g_aug, "double_pin_solution", 'i', (void *)(long)double_pin_solution);
     /* LocalMostLikelyConfig{ emoji/text 相关 true } */
     memset(&g_lml, 0, sizeof g_lml);
     g_lml.cls = "com/tencent/wxhld/info/SessionConfig$LocalMostLikelyConfig";

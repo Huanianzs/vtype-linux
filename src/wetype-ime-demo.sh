@@ -16,6 +16,18 @@ if [ -z "$ENG" ]; then
 fi
 HARNESS="$ENG/harness/jinterop"
 [ -x "$HARNESS" ] || HARNESS="$ENG/wetype-harness"
+if [ -z "${WETYPE_DOUBLE_PIN+x}" ]; then
+  WETYPE_DOUBLE_PIN=0
+  CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/fcitx5/conf/wetype.conf"
+  if [ -r "$CONFIG" ]; then
+    while IFS='=' read -r key value; do
+      if [ "$key" = PinyinScheme ] && [ "$value" = 小鹤双拼 ]; then
+        WETYPE_DOUBLE_PIN=3
+      fi
+    done < "$CONFIG"
+  fi
+  export WETYPE_DOUBLE_PIN
+fi
 LIBDIR="$ENG/lib"
 [ -d "$LIBDIR" ] || LIBDIR="$ENG/runtime"   # 开发目录布局
 DICTS="${WETYPE_DICT_DIR:-$ENG/dicts}"
