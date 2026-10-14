@@ -10,28 +10,35 @@ import 离线词库工具 as dbtools
 RT=Path.home()/'.local/lib/wetype-ime/arm64'
 ENGINE_SHA256='6002395d6509b49bc7551a4c970aee79b1400f5ee3814fe5da3d6626ffe421d3'
 
+def mark_full_pull_value(value,peer):
+    """固定3.5.4格式：192字节头、每成员64字节、密钥与详情两段长度前缀。"""
+    assert isinstance(peer,int) and 0<peer<2**64
+    assert len(value)>=208 and int.from_bytes(value[:8],'little')==1
+    # 原生序列化0x105d478/0x105d4c4：成员数写在0xb8，成员从0xc0开始。
+    count=int.from_bytes(value[184:192],'little');assert count<=256
+    key_offset=192+count*64;assert key_offset+8<=len(value)
+    key_len=int.from_bytes(value[key_offset:key_offset+8],'little');assert key_len in (0,16,24,32)
+    offset=key_offset+8+key_len;assert offset+8<=len(value)
+    size=int.from_bytes(value[offset:offset+8],'little');assert offset+8+size==len(value)
+    old=p.fields(value[offset+8:]) if size else {}
+    detail=b''.join(p.number(k,v) if isinstance(v,int) else p.blob(k,v)
+                    for k,values in old.items() if k!=9 for v in values)
+    if not old:detail=p.number(1,1)
+    detail+=p.number(9,peer)
+    data=bytearray(value[:offset])
+    # 清除这次补拉的限流时间，保留云端游标、本地已上传序号和已有成员进度。
+    data[48:56]=bytes(8);data[64:72]=bytes(8);data[104:120]=bytes(16)
+    data+=len(detail).to_bytes(8,'little')+detail
+    return bytes(data)
+
 def mark_full_pull(work,peer,backup):
     """一次性补导旧缺口，只设置同步控制标记；不解释或修改各 kind 的词库数据。"""
     work=Path(work).resolve();assert work.is_relative_to(p.STATE)
     with dbtools.DB(dbtools.database(work)) as db:
         value=dict(db.items())[b'!dcsc!CurrentInfoV3']
-        assert len(value)>=208 and int.from_bytes(value[:8],'little')==1
-        count=int.from_bytes(value[144:152],'little');assert count<=256
-        key_offset=192+count*64;assert key_offset+8<=len(value)
-        key_len=int.from_bytes(value[key_offset:key_offset+8],'little');assert key_len in (0,16,24,32)
-        offset=key_offset+8+key_len;assert offset+8<=len(value)
-        size=int.from_bytes(value[offset:offset+8],'little');assert offset+8+size==len(value)
-        old=p.fields(value[offset+8:]) if size else {}
-        detail=b''.join(p.number(k,v) if isinstance(v,int) else p.blob(k,v)
-                        for k,values in old.items() if k!=9 for v in values)
-        if not old:detail=p.number(1,1)
-        detail+=p.number(9,peer)
+        data=mark_full_pull_value(value,peer)
         Path(backup).write_bytes(value);Path(backup).chmod(0o600)
-        data=bytearray(value[:offset])
-        # 清除这次补拉的限流时间，保留云端游标、本地已上传序号和已有成员进度。
-        data[48:56]=bytes(8);data[64:72]=bytes(8);data[104:120]=bytes(16)
-        data+=len(detail).to_bytes(8,'little')+detail
-        db.put_all([(b'!dcsc!CurrentInfoV3',bytes(data))])
+        db.put_all([(b'!dcsc!CurrentInfoV3',data)])
 
 def summary(work):
     from collections import Counter
@@ -46,9 +53,18 @@ def summary(work):
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--source',required=True,help='已关闭的词库副本；不接受正式运行目录');ap.add_argument('--runtime',type=Path,default=RT);ap.add_argument('--peer',type=int,help='要补拉的官方设备编号；省略时用配对结果');ap.add_argument('--seconds',type=int,default=110)
     ap.add_argument('--work',help='继续使用已关闭的隔离工作目录')
+    ap.add_argument('--snapshot-dir',type=Path,help='下载工具生成的私有快照目录，使用其中实际选中的来源成员')
     ap.add_argument('--bootstrap',action='store_true',help='在已关闭副本写入一次性待补拉标记')
     ap.add_argument('--refresh-incremental',action='store_true',help='仅在副本清除增量限流时间，验证导入后的真实拉取')
     args=ap.parse_args();os.umask(0o077)
+    if args.snapshot_dir:
+        snapshot_dir=args.snapshot_dir.expanduser().resolve()
+        if not snapshot_dir.is_relative_to(p.STATE.resolve()):raise ValueError('快照目录必须位于当前身份的私有目录')
+        selection=json.loads((snapshot_dir/'selection.json').read_text())
+        selected=selection.get('device')
+        if type(selected) is not int or not 0<selected<2**64-1:raise ValueError('快照来源无效')
+        if args.peer and args.peer!=selected:raise ValueError('显式来源与下载结果不一致')
+        args.peer=selected
     global_runtime=args.runtime.expanduser().resolve()
     globals()['RT']=global_runtime
     live=Path(os.environ.get('XDG_DATA_HOME',Path.home()/'.local/share'))/'wetype-ime/dict'

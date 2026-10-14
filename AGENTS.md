@@ -155,6 +155,7 @@ python3 scripts/test_clipboard_desktop.py --backend x11   # 需要 Xvfb、xclip
 - 改动对应的文档一起更新，尤其是 README 的功能表和 `docs/安装与使用.md` 的按键表。
 - 合并上游 [yu1745/wetype-ime-linux](https://github.com/yu1745/wetype-ime-linux) 时，注意 `harness/jinterop.c` 里 SessionConfig 的默认值不要覆盖本项目设置的云配置和设备组信息。
 - `harness/dict_table.h` 必须和 APK 里的词库清单（`index.json`）一致，否则全新安装会启动失败。
+- 修改历史词库恢复时，分别验证空白词库和已有词库副本的实际记录、候选与重启；下载成功或原生合并日志不能单独证明完整恢复。恢复入口见 [恢复历史词库](docs/恢复历史词库.md)，不直接替换正在使用的词库。
 
 ### 升级官方版本
 

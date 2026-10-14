@@ -5,6 +5,8 @@
 宿主仅执行 HTTPS GET；JNI 上传任务异步失败，不发送文件。43 全量状态上报、91 上屏报告由宿主本地回复成功、
 不联网：被拒时引擎会反复重试，91 的待发上屏队列（最多100条）也一直留在词库里。其他未核对请求继续拒绝。"""
 import argparse,concurrent.futures,fcntl,json,os,selectors,socket,struct,subprocess,sys,threading,time,urllib.parse,urllib.request,tempfile
+import urllib.error
+import xml.etree.ElementTree as ET
 from collections import deque
 from pathlib import Path
 MAGIC=0x57434c31
@@ -97,7 +99,13 @@ def sync_service(p,sock,uin,group,log_path,readonly=False,downloads=False):
                         # 凭证查询不传文件；拒绝上传后队列才能继续处理下载任务。
                         download_keys.add(f'{uin}_{p.one(metadata,3)}')
                         for raw in metadata.get(2,[]):
-                            detail=p.fields(p.one(p.fields(raw),2,b''))
+                            record=p.fields(raw)
+                            detail=p.fields(p.one(record,2,b''))
+                            # 原生引擎按设备编号和快照版本申请凭证；它可能与旧 URL 的文件名不同。
+                            # 只登记同组成功响应明确返回的设备/版本，不接受任意拼接的键。
+                            device,version=p.one(record,1),p.one(detail,6)
+                            if isinstance(device,int) and device>0 and isinstance(version,int) and version>0:
+                                download_keys.add(f'{device}_{version}')
                             url=p.one(detail,8,b'').decode()
                             key=urllib.parse.urlparse(url).path.rsplit('/',1)[-1]
                             if key:download_keys.add(key)
@@ -147,6 +155,14 @@ def cos_service(sock,work,log_path):
                 assert count>0 and (not length or count==length)
                 output.flush();os.fsync(output.fileno())
             os.replace(temporary,target);temporary=None;code=0
+        except urllib.error.HTTPError as error:
+            entry['error']='HTTPError';entry['http_status']=error.code
+            try:
+                reason=ET.fromstring(error.read(16384)).findtext('Code')
+                if reason in {'NoSuchKey','AccessDenied','SignatureDoesNotMatch','RequestTimeTooSkewed','ExpiredToken'}:
+                    entry['cos_error_code']=reason
+            except (OSError,ET.ParseError):pass
+            finally:error.close()
         except Exception as error:
             entry['error']=type(error).__name__
             # 由用户检查网络/代理；不自动重传或换源。
