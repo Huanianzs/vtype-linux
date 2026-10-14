@@ -2,6 +2,8 @@
 import os
 import selectors
 import shutil
+import socket
+import struct
 import subprocess
 import time
 from 剪贴板协议 import MAX_RECEIVE_TEXT_BYTES
@@ -11,13 +13,82 @@ class ClipboardChanged(RuntimeError):
     pass
 
 
+def wayland_background_clipboard(env):
+    """只查询注册表，不绑定剪贴板或创建窗口；探测失败时按不支持处理。"""
+    display = env.get('WAYLAND_DISPLAY')
+    if not display:
+        return False
+    if not os.path.isabs(display):
+        runtime = env.get('XDG_RUNTIME_DIR')
+        if not runtime:
+            return False
+        display = os.path.join(runtime, display)
+    deadline = time.monotonic() + 2
+    interfaces = {}
+
+    def receive(connection, length):
+        data = bytearray()
+        while len(data) < length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            connection.settimeout(remaining)
+            chunk = connection.recv(length - len(data))
+            if not chunk:
+                raise EOFError
+            data.extend(chunk)
+        return data
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(2)
+            connection.connect(display)
+            connection.settimeout(max(.01, deadline - time.monotonic()))
+            # Wayland 使用本机字节序。仅发送 wl_display.get_registry 和 sync。
+            # 新对象 2 是注册表，3 是标记初始公告结束的回调。
+            connection.sendall(struct.pack('=IIIIII', 1, (12 << 16) | 1, 2, 1, 12 << 16, 3))
+            total = 0
+            while total < 256 * 1024:
+                object_id, header = struct.unpack('=II', receive(connection, 8))
+                size, opcode = header >> 16, header & 0xffff
+                if size < 8 or size % 4:
+                    return False
+                body = receive(connection, size - 8)
+                total += size
+                if object_id == 1 and opcode == 0:  # wl_display.error
+                    return False
+                if object_id == 3 and opcode == 0 and len(body) == 4:
+                    # 当前支持的 wl-clipboard 2.x 使用 wlr 数据控制协议。
+                    return 'zwlr_data_control_manager_v1' in interfaces.values()
+                if object_id == 2 and opcode == 0 and len(body) >= 12:
+                    length = struct.unpack_from('=I', body, 4)[0]
+                    if not length or 8 + ((length + 3) & ~3) + 4 != len(body) or body[8 + length - 1] != 0:
+                        return False
+                    name = struct.unpack_from('=I', body)[0]
+                    version = struct.unpack_from('=I', body, len(body) - 4)[0]
+                    if version:
+                        interfaces[name] = bytes(body[8:8 + length - 1]).decode('ascii')
+                elif object_id == 2 and opcode == 1 and len(body) == 4:
+                    interfaces.pop(struct.unpack('=I', body)[0], None)
+    except (OSError, EOFError, UnicodeError):
+        return False
+    return False
+
+
 class DesktopClipboard:
     def __init__(self, backend='auto', env=None):
         self.env = dict(os.environ if env is None else env)
-        if backend == 'auto':
-            backend = 'wayland' if self.env.get('WAYLAND_DISPLAY') else 'x11'
-        if backend not in ('x11', 'wayland'):
+        if backend not in ('auto', 'x11', 'wayland'):
             raise ValueError('剪贴板后端必须为 auto、x11 或 wayland')
+        automatic = backend == 'auto'
+        background = (wayland_background_clipboard(self.env)
+                      if backend != 'x11' and self.env.get('WAYLAND_DISPLAY') else False)
+        if automatic:
+            backend = 'wayland' if background else 'x11'
+        if self.env.get('WAYLAND_DISPLAY') and not background and backend == 'wayland':
+            raise RuntimeError('当前 Wayland 桌面不支持后台剪贴板；请安装 xclip 并使用 --backend x11 或 auto（需要 XWayland）')
+        if automatic and self.env.get('WAYLAND_DISPLAY') and backend == 'x11' and not self.env.get('DISPLAY'):
+            raise RuntimeError('当前 Wayland 桌面不支持后台剪贴板，且未启用 XWayland；无法启用剪贴板同步')
         self.backend = backend
         display = 'WAYLAND_DISPLAY' if backend == 'wayland' else 'DISPLAY'
         if not self.env.get(display):

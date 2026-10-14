@@ -57,6 +57,7 @@ def main():
             if not ready:
                 raise TimeoutError('隔离桌面未就绪')
             env['DISPLAY' if args.backend == 'x11' else 'WAYLAND_DISPLAY'] = ':' + ready if args.backend == 'x11' else ready
+            assert DesktopClipboard('auto', env).backend == args.backend
             desktop = DesktopClipboard(args.backend, env)
             if args.backend == 'x11':
                 subprocess.run(['xclip', '-selection', 'primary', '-in'], input=b'primary-stays-local', env=env, check=True,
