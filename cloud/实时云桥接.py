@@ -16,6 +16,12 @@ SYNC_ALLOWED={34,41,42,44}
 SYNC_FILTER_BITS=1|4|8|32   # 设备信息/常用语/词典信息/清理记录；不含剪贴板
 MAX_PUSH_OPS=1000           # 单次上传超过此数视为异常（如词库被重建），拒绝并登记
 
+def cloud_timeout_ms(config):
+    value=config.get('cloud_timeout_ms',1500)
+    if type(value) is not int or not 200<=value<=5000:
+        raise ValueError('cloud_timeout_ms 必须是 200 到 5000 的整数')
+    return value
+
 def sync_service(p,sock,uin,group,log_path,readonly=False,downloads=False):
     """在独立线程中服务官方引擎的 4814 同步请求；只记录统计，不落词条内容。"""
     client=None;download_keys=set()
@@ -178,11 +184,13 @@ def main():
     if command and command[0]=='--':command=command[1:]
     config=json.loads(Path(args.config).read_text())
     if not config.get('enabled'):os.execvpe(command[0],command,os.environ)
+    timeout=cloud_timeout_ms(config)
     sys.path.insert(0,config['protocol_dir']);import 官方同步探针 as p
     if config.get('state_dir'):p.STATE=Path(config['state_dir']).expanduser().resolve()
     from 云响应 import candidates
     parent,child=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
     env=os.environ.copy();env['WETYPE_CLOUD_FD']=str(child.fileno());env['WETYPE_CLOUD_NATIVE']='1'
+    env['WETYPE_CLOUD_TIMEOUT_MS']=str(timeout)
     passed=[child.fileno()];sync_child=None;cos_child=None
     if config.get('native_sync'):
         identity=json.loads((p.STATE/'identity.json').read_text())

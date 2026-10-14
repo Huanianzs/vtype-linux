@@ -22,6 +22,11 @@
 #include <fcitx-utils/keysym.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/trackableobject.h>
+#include <fcitx-config/configuration.h>
+#include <fcitx-config/enum.h>
+#include <fcitx-config/iniparser.h>
+#include <fcitx-config/option.h>
+#include <fcitx-utils/i18n.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -55,6 +60,12 @@ namespace fcitx {
 
 static constexpr int FALLBACK_PAGE_SIZE = 5;   // 取不到全局设置时的每页候选数
 static constexpr uint64_t ENGINE_RESTART_DELAY_USEC = 200000;
+
+enum class PinyinScheme { FullPinyin, Flypy };
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(PinyinScheme, N_("全拼"), N_("小鹤双拼"));
+FCITX_CONFIGURATION(WeTypeConfig,
+    OptionWithAnnotation<PinyinScheme, PinyinSchemeI18NAnnotation> pinyinScheme{
+        this, "PinyinScheme", "拼音方案", PinyinScheme::FullPinyin};);
 
 // Display-only segmentation. The original unsegmented buffer is still sent to
 // the WeType engine, so this never changes composition or candidate matching.
@@ -120,9 +131,19 @@ static std::string segmentPinyin(const std::string &raw) {
     return out;
 }
 
-static Text pinyinPreedit(const std::string &buffer) {
+static Text pinyinPreedit(const std::string &buffer, bool doublePin) {
     Text text;
-    if (!buffer.empty()) text.append(segmentPinyin(buffer), TextFormatFlag::NoFlag);
+    std::string display;
+    if (doublePin) {
+        // 双拼编码每两键一个音节；不按全拼词表切分，也不改动引擎输入。
+        for (size_t i = 0; i < buffer.size(); i += 2) {
+            if (i) display += ' ';
+            display.append(buffer, i, 2);
+        }
+    } else {
+        display = segmentPinyin(buffer);
+    }
+    if (!display.empty()) text.append(display, TextFormatFlag::NoFlag);
     return text;
 }
 
@@ -204,6 +225,7 @@ public:
     bool cloudConfigured() const { return cloudConfigured_; }
     void setOnReady(std::function<void()> cb) { onReady_ = std::move(cb); }
     void setOnExit(std::function<void()> cb) { onExit_ = std::move(cb); }
+    void setDoublePinSolution(int value) { doublePinSolution_ = value; }
 
     // 非阻塞启动; 就绪走 IO 事件。指数退避防 fork 风暴(连续 5 次失败放弃)。
     bool start() {
@@ -223,6 +245,7 @@ public:
         learningFile_ = work + "/../sync-control/learning-generation";
         // 路径解析与轮转都在父进程做完, 子进程只保留一次 open。
         const std::string harnessLog = prepareHarnessLog();
+        const std::string doublePin = std::to_string(doublePinSolution_);
 
         int inP[2], outP[2];
         if (pipe2(inP, O_CLOEXEC) < 0) return false;
@@ -237,6 +260,7 @@ public:
             return false;
         }
         if (p == 0) {
+            setenv("WETYPE_DOUBLE_PIN", doublePin.c_str(), 1);
             if(cloudConfigured_ && setpgid(0,0)<0)_exit(127);
             // QEMU user mode writes guest core files in its current directory.
             // Keep an engine crash from leaving qemu_wetype-harness_*.core in HOME.
@@ -436,6 +460,7 @@ private:
     int failCount_ = 0;
     bool gaveUp_ = false;
     bool cloudConfigured_ = false;
+    int doublePinSolution_ = 0;
 };
 
 // Punctuation history belongs to one input context and is never shared by
@@ -454,6 +479,8 @@ class WeTypeEngine final : public InputMethodEngineV2 {
 public:
     explicit WeTypeEngine(Instance *instance)
         : instance_(instance), eng_(instance->eventLoop()) {
+        readAsIni(config_, "conf/wetype.conf");
+        eng_.setDoublePinSolution(*config_.pinyinScheme == PinyinScheme::Flypy ? 3 : 0);
         signal(SIGPIPE, SIG_IGN);
         if (!instance_->inputContextManager().registerProperty("wetype-punctuation-state", &punctuationFactory_)) {
             throw std::runtime_error("cannot register WeType punctuation state");
@@ -548,6 +575,18 @@ public:
     }
 
     void keyEvent(const InputMethodEntry &, KeyEvent &event) override { processKey(event); }
+    const Configuration *getConfig() const override { return &config_; }
+    void setConfig(const RawConfig &raw) override {
+        const auto previous = *config_.pinyinScheme;
+        config_.load(raw, true);
+        safeSaveAsIni(config_, "conf/wetype.conf");
+        applyPinyinScheme(previous);
+    }
+    void reloadConfig() override {
+        const auto previous = *config_.pinyinScheme;
+        readAsIni(config_, "conf/wetype.conf");
+        applyPinyinScheme(previous);
+    }
     std::string subMode(const InputMethodEntry &,InputContext &ic) override {
         return ic.propertyFor(&modeFactory_)->english?"英文":"中文";
     }
@@ -587,6 +626,23 @@ public:
     }
 
 private:
+    void applyPinyinScheme(PinyinScheme previous) {
+        if (previous == *config_.pinyinScheme) return;
+        // 保存未完成的输入，再启动带新方案的会话；Q 会刷新学习数据。
+        auto *ic = icRef_.get();
+        if (ic && (!buf_.empty() || pending_)) {
+            const auto raw = pendingRaw();
+            clearAll();
+            commitText(ic, raw);
+        } else {
+            clearAll(ic);
+        }
+        restartSource_.reset();
+        eng_.stop();
+        eng_.setDoublePinSolution(*config_.pinyinScheme == PinyinScheme::Flypy ? 3 : 0);
+        ensureEngine();
+    }
+
     void processKey(KeyEvent &event);
     void toggleMode(InputContext *ic) {
         if (icRef_.get()!=ic) { clearAll();icRef_=ic->watch(); }
@@ -630,7 +686,7 @@ private:
         panel.reset();
         // Frontends may commit preedit on focus-out; include all consumed text.
         if (pending_) panel.setPreedit(Text(pendingRaw()));
-        else panel.setPreedit(pinyinPreedit(buf_));
+        else panel.setPreedit(pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy));
         if (cands_.empty() && !digitHits_.empty()) {
             // 数字常用语：已输入的数字照常上屏，回车只补全剩余部分。
             panel.setAuxUp(Text("常用语 · 回车补全，Esc 关闭"));
@@ -775,7 +831,8 @@ private:
         restartSource_ = instance_->eventLoop().addTimeEvent(
             CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + ENGINE_RESTART_DELAY_USEC, 0,
             [this](EventSourceTime *, uint64_t) {
-                restartSource_.reset();
+                // 回调还在执行，保持事件源存活到返回，避免释放捕获 this 的闭包。
+                auto keepAlive = std::move(restartSource_);
                 if (eng_.alive()) return true;
                 WLOG("restarting engine after exit buffer_len=%zu\n", buf_.size());
                 ensureEngine();
@@ -1117,6 +1174,7 @@ private:
     }
     EngineProc eng_;
     std::string buf_;
+    WeTypeConfig config_;
     std::unique_ptr<EventSourceTime> restartSource_;
     std::vector<std::string> cands_;
     std::vector<int> covers_;     // pinyin letters each candidate consumes (0 = unknown)
