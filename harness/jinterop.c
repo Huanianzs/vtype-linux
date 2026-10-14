@@ -487,15 +487,65 @@ static void *F_GetMethodID(void *env, void *cls, const char *name, const char *s
     LOG("GetMethodID(%s, %s, %s)\n", cls_name(cls), name, sig);
     return token_cache(cls, name, sig, 'm');
 }
-static void *F_CallObjectMethod(void *env, void *obj, JIDToken *id, ...) {
-    LOG("CallObjectMethod(%s.%s) -> null\n", obj ? ((JObj *)obj)->cls : "null", id ? id->name : "?");
-    /* 常见 getter 罐头：对 InitInfo 的方法一律回 null；后续按日志补充 */
+/* 仅用于 InitInfo.exptInfo 的单项参数表，静态对象随引擎进程存在。 */
+static JObj g_expt_map, g_expt_keys, g_expt_entries, g_expt_iter, g_expt_entry;
+static JArr g_expt_key_array, g_expt_entry_array;
+static void *expt_map_call(void *obj, JIDToken *id, void *key) {
+    if (!obj || !id) return NULL;
+    if (obj == &g_expt_map) {
+        if (!strcmp(id->name, "keySet")) return &g_expt_keys;
+        if (!strcmp(id->name, "entrySet")) return &g_expt_entries;
+        if (!strcmp(id->name, "get") && key) {
+            JField *s = obj_get(key, ".str");
+            if (s && !strcmp(s->val, "mmkb_cli_engine_cloud_time_out_ms"))
+                return (void *)obj_get(&g_expt_entry, ".value")->val;
+        }
+    }
+    if (obj == &g_expt_keys || obj == &g_expt_entries) {
+        JArr *array = obj == &g_expt_keys ? &g_expt_key_array : &g_expt_entry_array;
+        if (!strcmp(id->name, "toArray")) return array;
+        if (!strcmp(id->name, "iterator")) {
+            obj_set(&g_expt_iter, ".array", 'o', array);
+            obj_set(&g_expt_iter, ".remaining", 'i', (void *)1);
+            return &g_expt_iter;
+        }
+    }
+    if (obj == &g_expt_iter && !strcmp(id->name, "next")) {
+        obj_set(&g_expt_iter, ".remaining", 'i', (void *)0);
+        JArr *array = (JArr *)obj_get(&g_expt_iter, ".array")->val;
+        return array->elem[0];
+    }
+    if (obj == &g_expt_entry) {
+        if (!strcmp(id->name, "getKey")) return (void *)obj_get(&g_expt_entry, ".key")->val;
+        if (!strcmp(id->name, "getValue")) return (void *)obj_get(&g_expt_entry, ".value")->val;
+    }
     return NULL;
+}
+static void *F_CallObjectMethod(void *env, void *obj, JIDToken *id, ...) {
+    void *key = NULL;
+    if (obj == &g_expt_map && id && !strcmp(id->name, "get")) {
+        va_list args; va_start(args, id); key = va_arg(args, void *); va_end(args);
+    }
+    return expt_map_call(obj, id, key);
+}
+static void *F_CallObjectMethodV(void *env, void *obj, JIDToken *id, va_list args) {
+    return expt_map_call(obj, id,
+        obj == &g_expt_map && id && !strcmp(id->name, "get") ? va_arg(args, void *) : NULL);
+}
+static void *F_CallObjectMethodA(void *env, void *obj, JIDToken *id, const jvalue *args) {
+    return expt_map_call(obj, id,
+        obj == &g_expt_map && id && !strcmp(id->name, "get") && args ? args[0].l : NULL);
+}
+static unsigned char F_CallBooleanMethod(void *env, void *obj, JIDToken *id, ...) {
+    return obj == &g_expt_iter && id && !strcmp(id->name, "hasNext") &&
+        (long)obj_get(&g_expt_iter, ".remaining")->val != 0;
 }
 static void F_CallVoidMethod(void *env, void *obj, JIDToken *id, ...) {
     LOG("CallVoidMethod(%s.%s)\n", obj ? ((JObj *)obj)->cls : "null", id ? id->name : "?");
 }
 static long F_CallIntMethod(void *env, void *obj, JIDToken *id, ...) {
+    if ((obj == &g_expt_map || obj == &g_expt_keys || obj == &g_expt_entries) &&
+        id && !strcmp(id->name, "size")) return 1;
     LOG("CallIntMethod(%s.%s) -> 0\n", obj ? ((JObj *)obj)->cls : "null", id ? id->name : "?");
     return 0;
 }
@@ -818,15 +868,18 @@ static void build_env(void) {
     tab(ENV_SLOT(NewLocalRef), F_NewLocalRef);
     tab(ENV_SLOT(EnsureLocalCapacity), F_EnsureLocalCapacity);
     tab(ENV_SLOT(AllocObject), F_AllocObject);
-    /* F_NewObject / F_Call*Method 不读 Java 参数，...、V、A 三种变体共用一个实现 */
+    /* NewObject 和无参数 getter 可共用实现；Map.get 的三种调用分别读取参数。 */
     tab(ENV_SLOT(NewObject), F_NewObject);
     tab(ENV_SLOT(NewObjectV), F_NewObject);
     tab(ENV_SLOT(NewObjectA), F_NewObject);
     tab(ENV_SLOT(GetObjectClass), F_GetObjectClass);
     tab(ENV_SLOT(GetMethodID), F_GetMethodID);
     tab(ENV_SLOT(CallObjectMethod), F_CallObjectMethod);
-    tab(ENV_SLOT(CallObjectMethodV), F_CallObjectMethod);
-    tab(ENV_SLOT(CallObjectMethodA), F_CallObjectMethod);
+    tab(ENV_SLOT(CallObjectMethodV), F_CallObjectMethodV);
+    tab(ENV_SLOT(CallObjectMethodA), F_CallObjectMethodA);
+    tab(ENV_SLOT(CallBooleanMethod), F_CallBooleanMethod);
+    tab(ENV_SLOT(CallBooleanMethodV), F_CallBooleanMethod);
+    tab(ENV_SLOT(CallBooleanMethodA), F_CallBooleanMethod);
     tab(ENV_SLOT(CallIntMethod), F_CallIntMethod);
     tab(ENV_SLOT(CallIntMethodV), F_CallIntMethod);
     tab(ENV_SLOT(CallIntMethodA), F_CallIntMethod);
@@ -1542,6 +1595,36 @@ int main(int argc, char **argv) {
     obj_set(&g_initinfo, "logLevel", 'i', (void *)(long)0);
     obj_set(&g_initinfo, "packageType", 'i', (void *)(long)0);
     obj_set(&g_initinfo, "debugLogConfig", 's', "{}");
+    if (getenv("WETYPE_CLOUD_NATIVE") && getenv("WETYPE_CLOUD_FD")) {
+        static JObj expt, item, info;
+        static JArr items;
+        static void *elements[1], *keys[1], *entries[1];
+        const char *timeout = getenv("WETYPE_CLOUD_TIMEOUT_MS");
+        char *end = NULL;
+        long value = timeout ? strtol(timeout, &end, 10) : 1500;
+        if (timeout && (!*timeout || *end || value < 200 || value > 5000)) return 2;
+        static char setting[16];
+        snprintf(setting, sizeof setting, "%ld", value);
+        expt.cls = "com/tencent/wxhld/info/AbTestExptInfo";
+        item.cls = "com/tencent/wxhld/info/AbTestExptInfo$Item";
+        info.cls = "com/tencent/wxhld/info/ExptInfo";
+        g_expt_map.cls = "java/util/HashMap";
+        g_expt_keys.cls = g_expt_entries.cls = "java/util/Set";
+        g_expt_iter.cls = "java/util/Iterator";
+        g_expt_entry.cls = "java/util/Map$Entry";
+        keys[0] = str_obj("mmkb_cli_engine_cloud_time_out_ms");
+        entries[0] = &g_expt_entry;
+        g_expt_key_array = (JArr){keys, 1};
+        g_expt_entry_array = (JArr){entries, 1};
+        obj_set(&g_expt_entry, ".key", 'o', keys[0]);
+        obj_set(&g_expt_entry, ".value", 'o', str_obj(setting));
+        obj_set(&info, "hit_type", 'l', (void *)4);
+        obj_set(&item, "params", 'o', &g_expt_map);
+        obj_set(&item, "expt_info", 'o', &info);
+        elements[0] = &item; items = (JArr){elements, 1};
+        obj_set(&expt, "items", 'o', &items);
+        obj_set(&g_initinfo, "exptInfo", 'o', &expt);
+    }
     /* WevisDeviceScoreInfo：浮点分数不能为 0，否则 BLAS 零尺寸崩溃 */
     {
         static JObj wevis; static float cpu_s = 1.0f, gpu_s = 1.0f;

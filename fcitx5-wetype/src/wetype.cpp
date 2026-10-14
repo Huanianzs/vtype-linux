@@ -775,7 +775,8 @@ private:
         restartSource_ = instance_->eventLoop().addTimeEvent(
             CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + ENGINE_RESTART_DELAY_USEC, 0,
             [this](EventSourceTime *, uint64_t) {
-                restartSource_.reset();
+                // 回调还在执行，保持事件源存活到返回，避免释放捕获 this 的闭包。
+                auto keepAlive = std::move(restartSource_);
                 if (eng_.alive()) return true;
                 WLOG("restarting engine after exit buffer_len=%zu\n", buf_.size());
                 ensureEngine();
