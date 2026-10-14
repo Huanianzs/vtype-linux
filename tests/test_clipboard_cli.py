@@ -75,6 +75,16 @@ class ClipboardCliTest(unittest.TestCase):
             run.assert_not_called()
         self.assertFalse((self.root / 'config/wetype-ime/clipboard.json').exists())
 
+    def test_service_keeps_packaged_snappy_python_and_client(self):
+        from 剪贴板同步 import configure_service
+        with patch.dict(os.environ, {'WETYPE_SNAPPY_LIBRARY': '/opt/wetype/lib/libsnappy.so'}), \
+                patch('运行支持.wxc_binary', return_value='/synthetic/wxc'):
+            configure_service(self.state, Path('/opt/wetype/wetype-cloud.py'))
+        body = (self.root / 'config/systemd/user/wetype-clipboard.service').read_text()
+        self.assertIn('WETYPE_SNAPPY_LIBRARY=/opt/wetype/lib/libsnappy.so', body)
+        self.assertIn('WETYPE_WXC=/synthetic/wxc', body)
+        self.assertIn('ExecStart=' + setup.quote_unit(sys.executable), body)
+
     def test_enable_does_not_overwrite_unrelated_systemd_unit(self):
         self.state.mkdir()
         (self.state / 'identity.json').write_text('{}')

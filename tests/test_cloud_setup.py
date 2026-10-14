@@ -60,6 +60,19 @@ class CloudSetupTest(unittest.TestCase):
         self.assertTrue(identity.exists())
         self.assertEqual(config.stat().st_mode & 0o777, 0o600)
 
+    def test_timer_uses_current_runtime_and_environment(self):
+        values = {'PATH': '/opt/wetype/bin:/usr/bin',
+                  'WETYPE_SNAPPY_LIBRARY': '/opt/wetype/lib/libsnappy.so'}
+        with patch.dict(os.environ, values), patch.object(setup, 'wxc_binary', return_value='/opt/wxc'):
+            with patch.object(setup.subprocess, 'run') as run:
+                setup.configure_timer(self.root / 'engine')
+        body = (self.root / 'config/systemd/user/wetype-sync.service').read_text()
+        self.assertIn('ExecStart=' + setup.quote_unit(sys.executable), body)
+        self.assertIn(setup.quote_unit(Path(setup.__file__).with_name('会话与常用语刷新.py')), body)
+        self.assertIn('PATH=/opt/wetype/bin:/usr/bin', body)
+        self.assertIn('WETYPE_SNAPPY_LIBRARY=/opt/wetype/lib/libsnappy.so', body)
+        self.assertEqual(run.call_count, 2)
+
     def test_export_keeps_official_key_and_empty_fallback(self):
         from 导出官方常用语 import entries
         rows = p.blob(2, p.blob(2, 'mail') + p.blob(3, 'synthetic@example.invalid'))

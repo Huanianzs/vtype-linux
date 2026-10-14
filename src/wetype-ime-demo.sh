@@ -14,7 +14,7 @@ if [ -z "$ENG" ]; then
   else ENG="$(cd "$SELF_DIR/.." && pwd)"
   fi
 fi
-HARNESS="$ENG/harness/jinterop"
+HARNESS="${WETYPE_HARNESS:-$ENG/harness/jinterop}"
 [ -x "$HARNESS" ] || HARNESS="$ENG/wetype-harness"
 if [ -z "${WETYPE_DOUBLE_PIN+x}" ]; then
   WETYPE_DOUBLE_PIN=0

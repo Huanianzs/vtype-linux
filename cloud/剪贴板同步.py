@@ -152,7 +152,9 @@ def configure_service(state, entry):
             'KillMode=process\n'
             'Environment=' + quote_unit('WETYPE_WXC=' + wxc_binary()) + '\n'
             'Environment=' + quote_unit('PATH=' + os.environ.get('PATH', '/usr/bin:/bin')) + '\n'
-            'ExecStart=' + quote_unit(sys.executable) + ' ' + quote_unit(entry) +
+            + ('Environment=' + quote_unit('WETYPE_SNAPPY_LIBRARY=' + os.environ['WETYPE_SNAPPY_LIBRARY']) + '\n'
+               if os.environ.get('WETYPE_SNAPPY_LIBRARY') else '')
+            + 'ExecStart=' + quote_unit(sys.executable) + ' ' + quote_unit(entry) +
             ' --state ' + quote_unit(state) + ' clipboard run\n'
             '[Install]\nWantedBy=graphical-session.target default.target\n')
     atomic(unit, body.encode())

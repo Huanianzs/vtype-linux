@@ -17,7 +17,7 @@ class DesktopClipboardTest(unittest.TestCase):
             root = Path(directory)
             for name in ('wl-paste', 'wl-copy'):
                 script = root / name
-                script.write_text('#!/usr/bin/python3\nimport sys\nprint("Nothing is copied",file=sys.stderr);sys.exit(1)\n')
+                script.write_text(f'#!{sys.executable}\nimport sys\nprint("Nothing is copied",file=sys.stderr);sys.exit(1)\n')
                 script.chmod(0o700)
             desktop = DesktopClipboard('wayland', dict(os.environ, PATH=str(root), WAYLAND_DISPLAY='synthetic'))
             self.assertIsNone(desktop.read())
@@ -26,7 +26,7 @@ class DesktopClipboardTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / 'xclip'
-            script.write_text('#!/usr/bin/python3\nimport os,sys\n'
+            script.write_text(f'#!{sys.executable}\nimport os,sys\n'
                               'if os.path.exists(os.environ["SYNTHETIC_FAILURE"]):\n'
                               '    print("synthetic read failure",file=sys.stderr);sys.exit(1)\n'
                               'print("UTF8_STRING") if "TARGETS" in sys.argv else sys.stdout.write("preexisting")\n')
