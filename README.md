@@ -43,8 +43,10 @@ agent 会检查系统环境、编译、安装、启用输入法并跑一遍自�
 | | 状态 |
 |---|---|
 | x86_64 + Ubuntu 22.04 + KDE / X11 | 日常使用中 |
-| Ubuntu 24.04、其他发行版 | CI 能编译，实机没验证 |
-| Wayland、GNOME | 没验证 |
+| x86_64 + Ubuntu 26.04 + GNOME / Wayland | 社区反馈全部功能可用，剪贴板走 XWayland（[#11](https://github.com/zhl-HFUT/vtype-linux/issues/11)） |
+| Kubuntu 26.04 | 社区反馈安装成功、使用正常（[#9](https://github.com/zhl-HFUT/vtype-linux/issues/9)） |
+| x86_64 + NixOS + Niri / Wayland | 社区反馈用 Nix 包安装，本地输入和云候选可用（[#4](https://github.com/zhl-HFUT/vtype-linux/pull/4)、[#5](https://github.com/zhl-HFUT/vtype-linux/issues/5)） |
+| Ubuntu 24.04、其他发行版 | CI 能编译，还没有实机反馈 |
 | ARM64 | 上游支持原生运行，本项目的云功能没验证 |
 
 在其他环境装成功或失败了，都欢迎[开个 issue](https://github.com/zhl-HFUT/vtype-linux/issues/new/choose) 说一声，这是现在最缺的信息。
