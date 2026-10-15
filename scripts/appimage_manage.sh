@@ -197,6 +197,22 @@ if [ "$action" = install ]; then
   install -m 644 "$src/share/fcitx5/inputmethod/wetype-im.conf" "$im_conf"
   install -m 644 "$src/share/applications/wetype-ime.desktop" "$desktop"
   install -m 644 "$src/share/icons/hicolor/256x256/apps/wetype-ime.png" "$icon"
+  # 候选窗主题：只装不存在的，绝不覆盖用户已有主题（“不直接替换”）。
+  if [ -d "$src/share/fcitx5/themes" ]; then
+    themes_dir="$prefix/share/fcitx5/themes"
+    mkdir -p "$themes_dir"
+    for t in "$src"/share/fcitx5/themes/*/; do
+      [ -f "$t/theme.conf" ] || continue
+      name="$(basename "$t")"
+      if [ -e "$themes_dir/$name" ]; then
+        echo "主题 $name 已存在，跳过（不覆盖）"
+      else
+        cp -a "$t" "$themes_dir/"
+        echo "已安装主题：$name"
+      fi
+    done
+    echo "切换主题：bash scripts/set-candidate-theme.sh list / set --light … --dark …（或 fcitx5-configtool 经典界面）"
+  fi
   echo "安装完成 ($scope)。Fcitx5 插件：$addon"
   echo "请重启 Fcitx5，并在输入法配置中添加“微信拼音”。"
 else

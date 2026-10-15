@@ -22,14 +22,9 @@ agent 会检查系统环境、编译、安装、启用输入法并跑一遍自�
 
 ### 候选窗主题（可选）
 
-仓库 `themes/` 内置了几套候选窗主题（仿微信 `wechat-light` / `wechat-dark`、粉色系 `ayaya-light` / `ayaya-dark`，以及微调版 `ayaya-dark-custom`）。把想用的主题拷到 fcitx5 的用户主题目录（**同名已存在时先看清再覆盖**）：
+仓库 `themes/` 内置了几套候选窗主题（仿微信 `wechat-light` / `wechat-dark`、粉色系 `ayaya-light` / `ayaya-dark`，以及微调版 `ayaya-dark-custom`）。用 `install` 安装时会自动铺到 `~/.local/share/fcitx5/themes/`，**已存在的同名主题会跳过、不会覆盖**。
 
-```sh
-mkdir -p ~/.local/share/fcitx5/themes
-cp -a themes/wechat-light themes/wechat-dark ~/.local/share/fcitx5/themes/
-```
-
-然后在 `fcitx5-configtool`（附加组件 → 经典界面）里选，或用脚本切换（只改 `~/.config/fcitx5/conf/classicui.conf` 的 `Theme` / `DarkTheme` / `UseDarkTheme`，改前自动备份）：
+装好后在 `fcitx5-configtool`（附加组件 → 经典界面）里选，或用脚本切换（只改 `~/.config/fcitx5/conf/classicui.conf` 的 `Theme` / `DarkTheme` / `UseDarkTheme`，改前自动备份）：
 
 ```sh
 bash scripts/set-candidate-theme.sh list
