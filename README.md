@@ -20,6 +20,24 @@ agent 会检查系统环境、编译、安装、启用输入法并跑一遍自�
 
 想自己动手，看 [安装与使用](docs/安装与使用.md)。Nix/NixOS 用户见 [Nix 安装](docs/NixOS.md)。
 
+### 候选窗主题（可选）
+
+仓库 `themes/` 内置了几套候选窗主题（仿微信 `wechat-light` / `wechat-dark`、粉色系 `ayaya-light` / `ayaya-dark`，以及微调版 `ayaya-dark-custom`）。把想用的主题拷到 fcitx5 的用户主题目录（**同名已存在时先看清再覆盖**）：
+
+```sh
+mkdir -p ~/.local/share/fcitx5/themes
+cp -a themes/wechat-light themes/wechat-dark ~/.local/share/fcitx5/themes/
+```
+
+然后在 `fcitx5-configtool`（附加组件 → 经典界面）里选，或用脚本切换（只改 `~/.config/fcitx5/conf/classicui.conf` 的 `Theme` / `DarkTheme` / `UseDarkTheme`，改前自动备份）：
+
+```sh
+bash scripts/set-candidate-theme.sh list
+bash scripts/set-candidate-theme.sh set --light wechat-light --dark ayaya-dark
+```
+
+主题的来源与许可见 [themes/README.md](themes/README.md)、[themes/NOTICE](themes/NOTICE)。
+
 ## 能做什么
 
 | | 说明 |
@@ -87,6 +105,7 @@ Linux不发送上屏报告或整库快照文件。手动请求快照重建时，
 - [剪贴板互通](docs/剪贴板互通.md)：和手机、Mac 双向同步复制的文字
 - [更新公共词库](docs/更新公共词库.md)：下载二级词库等新版资源
 - [恢复历史词库](docs/恢复历史词库.md)：检查失效快照、请求来源重建、隔离导入与拼音补齐
+- [候选窗主题](themes/README.md)：内置主题（仿微信 / 粉色系）与切换方式
 - [上游资料](docs/上游/)：上游原始 README（含 ARM64、AppImage 打包）、引擎泄漏分析、界面测试和性能对比
 
 ## 致谢
