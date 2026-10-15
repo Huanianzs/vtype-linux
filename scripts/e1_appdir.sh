@@ -148,6 +148,17 @@ chmod +x "$APPDIR/usr/bin/wetype-demo"
 cp "$ADDON_SO" "$APPDIR/usr/lib/fcitx5/libfcitx5-wetype.so"
 cp "$BASE/fcitx5-wetype/wetype-addon.conf" "$APPDIR/usr/share/fcitx5/addon/wetype.conf"
 cp "$BASE/fcitx5-wetype/wetype-im.conf" "$APPDIR/usr/share/fcitx5/inputmethod/wetype-im.conf"
+# 候选窗主题（fcitx5 classicui），随 AppImage 分发；安装时不覆盖用户已有主题。
+if [ -d "$BASE/themes" ]; then
+  mkdir -p "$APPDIR/usr/share/fcitx5/themes"
+  for t in "$BASE"/themes/*/; do
+    [ -f "$t/theme.conf" ] || continue
+    cp -a "$t" "$APPDIR/usr/share/fcitx5/themes/"
+  done
+  mkdir -p "$APPDIR/usr/share/doc/wetype-ime/themes"
+  cp "$BASE/themes/README.md" "$BASE/themes/NOTICE" "$BASE/themes/LICENSE" \
+     "$APPDIR/usr/share/doc/wetype-ime/themes/" 2>/dev/null || true
+fi
 cp "$BASE/scripts/appimage_manage.sh" "$APPDIR/usr/lib/wetype-ime/appimage-manage.sh"
 cp "$BASE/scripts/appimage_run.sh" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun" "$APPDIR/usr/lib/wetype-ime/appimage-manage.sh"
