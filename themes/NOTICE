@@ -1,0 +1,19 @@
+本目录下的候选窗主题来源与归属说明（NOTICE）
+============================================
+
+wechat-light、wechat-dark
+  来源：witt-bit/fcitx5-theme-wechat
+  作者：witt
+  许可：Apache License 2.0（见本目录 LICENSE）
+
+ayaya-light、ayaya-dark
+  来源：witt-bit/fcitx5-theme-ayaya
+  作者：witt
+  许可：Apache License 2.0（见本目录 LICENSE）
+
+ayaya-dark-custom
+  来源：基于上面的 ayaya-dark 修改而成
+  许可：Apache License 2.0
+
+本项目（VType Linux）为 GPL-3.0；上述 Apache-2.0 资源与其兼容，按 Apache-2.0 要求
+保留许可证与署名。若权利人要求，可随时移除。
