@@ -51,6 +51,8 @@ agent 会检查系统环境、编译、安装、启用输入法并跑一遍自�
 
 在其他环境装成功或失败了，都欢迎[开个 issue](https://github.com/zhl-HFUT/vtype-linux/issues/new/choose) 说一声，这是现在最缺的信息。
 
+GNOME + Wayland 下还需要设置桌面环境变量（让程序走 XWayland，候选窗才对准光标），运行 `bash scripts/setup-gnome-wayland.sh`，注销重新登录后生效，详见[安装与使用](docs/安装与使用.md)。
+
 ## 会发送什么
 
 | 功能 | 发给官方服务器的内容 |

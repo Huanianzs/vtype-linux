@@ -199,6 +199,11 @@ if [ "$action" = install ]; then
   install -m 644 "$src/share/icons/hicolor/256x256/apps/wetype-ime.png" "$icon"
   echo "安装完成 ($scope)。Fcitx5 插件：$addon"
   echo "请重启 Fcitx5，并在输入法配置中添加“微信拼音”。"
+  # GNOME + Wayland 下自动配置桌面环境变量（KDE/Sway 等原生支持的会自行跳过）。
+  # 设 WETYPE_SKIP_DESKTOP_ENV=1 可跳过。
+  if [ "${WETYPE_SKIP_DESKTOP_ENV:-0}" != "1" ] && [ -f "$src_scripts/setup-gnome-wayland.sh" ]; then
+    bash "$src_scripts/setup-gnome-wayland.sh" || true
+  fi
 else
   # 仅停止由此用户安装路径生成的刷新任务；其他同名服务不动。
   if [ "$scope" = user ]; then
