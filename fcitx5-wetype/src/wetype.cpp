@@ -65,7 +65,9 @@ enum class PinyinScheme { FullPinyin, Flypy };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(PinyinScheme, N_("全拼"), N_("小鹤双拼"));
 FCITX_CONFIGURATION(WeTypeConfig,
     OptionWithAnnotation<PinyinScheme, PinyinSchemeI18NAnnotation> pinyinScheme{
-        this, "PinyinScheme", "拼音方案", PinyinScheme::FullPinyin};);
+        this, "PinyinScheme", "拼音方案", PinyinScheme::FullPinyin};
+    Option<bool> alwaysEnglishPunctuation{
+        this, "AlwaysEnglishPunctuation", "始终使用英文标点", false};);
 
 // Display-only segmentation. The original unsegmented buffer is still sent to
 // the WeType engine, so this never changes composition or candidate matching.
@@ -738,7 +740,15 @@ private:
         ic->propertyFor(&punctuationFactory_)->lastDigit = !text.empty() && text.back()>='0' && text.back()<='9';
     }
 
-    std::string chinesePunctuation(InputContext *ic, KeySym symbol) {
+    std::string punctuationText(InputContext *ic, KeySym symbol) {
+        // 只改变标点，不切换输入语言；组词时仍按原路径上屏当前候选。
+        if (*config_.alwaysEnglishPunctuation &&
+            ((symbol >= FcitxKey_exclam && symbol <= FcitxKey_slash) ||
+             (symbol >= FcitxKey_colon && symbol <= FcitxKey_at) ||
+             (symbol >= FcitxKey_bracketleft && symbol <= FcitxKey_grave) ||
+             (symbol >= FcitxKey_braceleft && symbol <= FcitxKey_asciitilde))) {
+            return std::string(1, static_cast<char>(symbol));
+        }
         if (punctuationLanguage(ic)!=wetype::TextLanguage::Cjk) return {};
         auto *state=ic->propertyFor(&punctuationFactory_);
         switch (symbol) {
@@ -1444,7 +1454,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                 handled = true;
             }
         }
-        else if (const auto symbol = chinesePunctuation(ic,sym); !symbol.empty()) {
+        else if (const auto symbol = punctuationText(ic,sym); !symbol.empty()) {
             if (!buf_.empty()) {
                 const std::string text = !candidatesCurrent_ || cands_.empty() ? buf_ : cands_[selected_];
                 if (candidatesCurrent_ && !cands_.empty() &&
