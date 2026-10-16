@@ -20,6 +20,7 @@
 #include <fcitx/text.h>
 #include <fcitx/candidatelist.h>
 #include <fcitx-utils/keysym.h>
+#include <fcitx-utils/key.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/trackableobject.h>
 #include <fcitx-config/configuration.h>
@@ -55,19 +56,12 @@
 #include "common_phrases.h"
 #include "harness_log.h"
 #include "punctuation.h"
+#include "config.h"
 
 namespace fcitx {
 
 static constexpr int FALLBACK_PAGE_SIZE = 5;   // 取不到全局设置时的每页候选数
 static constexpr uint64_t ENGINE_RESTART_DELAY_USEC = 200000;
-
-enum class PinyinScheme { FullPinyin, Flypy };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(PinyinScheme, N_("全拼"), N_("小鹤双拼"));
-FCITX_CONFIGURATION(WeTypeConfig,
-    OptionWithAnnotation<PinyinScheme, PinyinSchemeI18NAnnotation> pinyinScheme{
-        this, "PinyinScheme", "拼音方案", PinyinScheme::FullPinyin};
-    Option<bool> alwaysEnglishPunctuation{
-        this, "AlwaysEnglishPunctuation", "始终使用英文标点", false};);
 
 // Display-only segmentation. The original unsegmented buffer is still sent to
 // the WeType engine, so this never changes composition or candidate matching.
@@ -1407,10 +1401,9 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             updateUI(*ic);
             requestCandidates(replayBuffer ? buf_ : std::string(1, c));
         }
-        // 方向键: 左右在当前页候选内移动, 上/下 = 上一页/下一页
+        // 方向键左右: 在当前页候选内移动
         else if (!buf_.empty() && candidatesCurrent_ && !cands_.empty() &&
-                 (sym == FcitxKey_Left || sym == FcitxKey_Right ||
-                  sym == FcitxKey_Up || sym == FcitxKey_Down)) {
+                 (sym == FcitxKey_Left || sym == FcitxKey_Right)) {
             const int page = pageSize();
             if (sym == FcitxKey_Left && selected_ > windowStart_) {
                 --selected_;
@@ -1418,41 +1411,30 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                        selected_ + 1 < std::min<int>(windowStart_ + page,
                                                      cands_.size())) {
                 ++selected_;
-            } else if (sym == FcitxKey_Up && windowStart_ > 0) {
-                windowStart_ = std::max(0, windowStart_ - page);
-                selected_ = windowStart_;
-            } else if (sym == FcitxKey_Down &&
-                       windowStart_ + page < (int)cands_.size()) {
-                windowStart_ += page;
-                selected_ = windowStart_;
             }
             // Composition navigation remains consumed at page boundaries.
             updateUI(*ic);
             handled = true;
         }
-        // - / = / PgUp / PgDn : 按整页翻页。组词状态下这些键只用于翻页,
-        // 即使已到边界也要吞掉, 否则 "-" "=" 会漏进目标文档 (issue #5)。
-        else if (sym == FcitxKey_minus || sym == FcitxKey_Page_Up) {
-            if (!buf_.empty()) {
-                if (windowStart_ > 0) {
-                    windowStart_ = std::max(0, windowStart_ - pageSize());
-                    selected_ = windowStart_;
-                    updateUI(*ic);
-                }
-                handled = true;
+        // 翻上一页: 按配置的按键列表 (默认 -、↑、PgUp 等)。组词状态下这些键只用于翻页,
+        // 即使已到边界也要吞掉, 否则按键会漏进目标文档 (issue #5)。
+        else if (!buf_.empty() && event.key().checkKeyList(*config_.prevPage)) {
+            if (windowStart_ > 0) {
+                windowStart_ = std::max(0, windowStart_ - pageSize());
+                selected_ = windowStart_;
+                updateUI(*ic);
             }
+            handled = true;
         }
-        else if (sym == FcitxKey_equal || sym == FcitxKey_plus ||
-                 sym == FcitxKey_KP_Add || sym == FcitxKey_Page_Down) {
-            if (!buf_.empty()) {
-                if (candidatesCurrent_ &&
-                    windowStart_ + pageSize() < (int)cands_.size()) {
-                    windowStart_ += pageSize();
-                    selected_ = windowStart_;
-                    updateUI(*ic);
-                }
-                handled = true;
+        // 翻下一页: 按配置的按键列表 (默认 =、+、KP_Add、↓、PgDn 等)。
+        else if (!buf_.empty() && event.key().checkKeyList(*config_.nextPage)) {
+            if (candidatesCurrent_ &&
+                windowStart_ + pageSize() < (int)cands_.size()) {
+                windowStart_ += pageSize();
+                selected_ = windowStart_;
+                updateUI(*ic);
             }
+            handled = true;
         }
         else if (const auto symbol = punctuationText(ic,sym); !symbol.empty()) {
             if (!buf_.empty()) {

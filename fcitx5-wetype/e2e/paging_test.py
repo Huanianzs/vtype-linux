@@ -260,6 +260,33 @@ check("live shrink clamps selected index before Space",
       len(got) > before and got[-1] == 2 and bool(commits))
 set_page_size(PS)
 
+# 自定义翻页键测试 (逗号 / 句号)
+conf_dir = os.path.dirname(os.environ["WETYPE_PAGETEST_CONFIG"])
+wetype_conf = os.path.join(conf_dir, "conf", "wetype.conf")
+os.makedirs(os.path.join(conf_dir, "conf"), exist_ok=True)
+with open(wetype_conf, "w") as f:
+    f.write("[PrevPage]\n0=comma\n\n[NextPage]\n0=period\n")
+CTL.ReloadAddonConfig("wetype")
+pump(0.3)
+
+KEY["comma"] = 44
+KEY["period"] = 46
+
+fresh()
+consumed_period = press("period")
+check("custom period翻页键组词时被吞掉", consumed_period)
+check("custom period翻页不泄漏进文档", len(commits) == 0)
+before = len(indexes())
+press("1")
+pump(0.8)
+got = indexes()
+check("按自定义句号翻页后选词为第二页候选", len(got) > before and got[-1] == PS, "index=%s" % (got[-1] if got else -1))
+
+if os.path.exists(wetype_conf):
+    os.remove(wetype_conf)
+CTL.ReloadAddonConfig("wetype")
+pump(0.2)
+
 failed = [r for r in results if not r[1]]
 print("SUMMARY page_size=%d total=%d failed=%d" % (PS, len(results), len(failed)), flush=True)
 print("E2E_RESULT =", "FAIL" if failed else "PASS", flush=True)
