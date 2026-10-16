@@ -222,6 +222,7 @@ public:
     void setOnReady(std::function<void()> cb) { onReady_ = std::move(cb); }
     void setOnExit(std::function<void()> cb) { onExit_ = std::move(cb); }
     void setDoublePinSolution(int value) { doublePinSolution_ = value; }
+    void setFuzzyFlags(uint32_t value) { fuzzyFlags_ = value; }
 
     // 非阻塞启动; 就绪走 IO 事件。指数退避防 fork 风暴(连续 5 次失败放弃)。
     bool start() {
@@ -242,6 +243,7 @@ public:
         // 路径解析与轮转都在父进程做完, 子进程只保留一次 open。
         const std::string harnessLog = prepareHarnessLog();
         const std::string doublePin = std::to_string(doublePinSolution_);
+        const std::string fuzzyVal = std::to_string(fuzzyFlags_);
 
         int inP[2], outP[2];
         if (pipe2(inP, O_CLOEXEC) < 0) return false;
@@ -257,6 +259,7 @@ public:
         }
         if (p == 0) {
             setenv("WETYPE_DOUBLE_PIN", doublePin.c_str(), 1);
+            setenv("WETYPE_FUZZY", fuzzyVal.c_str(), 1);
             if(cloudConfigured_ && setpgid(0,0)<0)_exit(127);
             // QEMU user mode writes guest core files in its current directory.
             // Keep an engine crash from leaving qemu_wetype-harness_*.core in HOME.
@@ -457,6 +460,7 @@ private:
     bool gaveUp_ = false;
     bool cloudConfigured_ = false;
     int doublePinSolution_ = 0;
+    uint32_t fuzzyFlags_ = 0;
 };
 
 // Punctuation history belongs to one input context and is never shared by
@@ -477,6 +481,7 @@ public:
         : instance_(instance), eng_(instance->eventLoop()) {
         readAsIni(config_, "conf/wetype.conf");
         eng_.setDoublePinSolution(*config_.pinyinScheme == PinyinScheme::Flypy ? 3 : 0);
+        eng_.setFuzzyFlags(config_.fuzzyFlags());
         signal(SIGPIPE, SIG_IGN);
         if (!instance_->inputContextManager().registerProperty("wetype-punctuation-state", &punctuationFactory_)) {
             throw std::runtime_error("cannot register WeType punctuation state");
@@ -573,15 +578,17 @@ public:
     void keyEvent(const InputMethodEntry &, KeyEvent &event) override { processKey(event); }
     const Configuration *getConfig() const override { return &config_; }
     void setConfig(const RawConfig &raw) override {
-        const auto previous = *config_.pinyinScheme;
+        const auto previousScheme = *config_.pinyinScheme;
+        const auto previousFuzzy = config_.fuzzyFlags();
         config_.load(raw, true);
         safeSaveAsIni(config_, "conf/wetype.conf");
-        applyPinyinScheme(previous);
+        applyEngineConfig(previousScheme, previousFuzzy);
     }
     void reloadConfig() override {
-        const auto previous = *config_.pinyinScheme;
+        const auto previousScheme = *config_.pinyinScheme;
+        const auto previousFuzzy = config_.fuzzyFlags();
         readAsIni(config_, "conf/wetype.conf");
-        applyPinyinScheme(previous);
+        applyEngineConfig(previousScheme, previousFuzzy);
     }
     std::string subMode(const InputMethodEntry &,InputContext &ic) override {
         return ic.propertyFor(&modeFactory_)->english?"英文":"中文";
@@ -622,8 +629,10 @@ public:
     }
 
 private:
-    void applyPinyinScheme(PinyinScheme previous) {
-        if (previous == *config_.pinyinScheme) return;
+    void applyEngineConfig(PinyinScheme previousScheme, uint32_t previousFuzzy) {
+        const bool schemeChanged = (previousScheme != *config_.pinyinScheme);
+        const bool fuzzyChanged = (previousFuzzy != config_.fuzzyFlags());
+        if (!schemeChanged && !fuzzyChanged) return;
         // 保存未完成的输入，再启动带新方案的会话；Q 会刷新学习数据。
         auto *ic = icRef_.get();
         if (ic && (!buf_.empty() || pending_)) {
@@ -636,6 +645,7 @@ private:
         restartSource_.reset();
         eng_.stop();
         eng_.setDoublePinSolution(*config_.pinyinScheme == PinyinScheme::Flypy ? 3 : 0);
+        eng_.setFuzzyFlags(config_.fuzzyFlags());
         ensureEngine();
     }
 
