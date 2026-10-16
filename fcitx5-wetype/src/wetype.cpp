@@ -66,6 +66,8 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(PinyinScheme, N_("全拼"), N_("小鹤双拼"))
 FCITX_CONFIGURATION(WeTypeConfig,
     OptionWithAnnotation<PinyinScheme, PinyinSchemeI18NAnnotation> pinyinScheme{
         this, "PinyinScheme", "拼音方案", PinyinScheme::FullPinyin};
+    Option<bool> showPinyinInInput{
+        this, "ShowPinyinInInput", "在输入框中显示拼音", false};
     Option<bool> alwaysEnglishPunctuation{
         this, "AlwaysEnglishPunctuation", "始终使用英文标点", false};);
 
@@ -580,14 +582,18 @@ public:
     const Configuration *getConfig() const override { return &config_; }
     void setConfig(const RawConfig &raw) override {
         const auto previous = *config_.pinyinScheme;
+        const bool previousPreedit = *config_.showPinyinInInput;
         config_.load(raw, true);
         safeSaveAsIni(config_, "conf/wetype.conf");
         applyPinyinScheme(previous);
+        applyPreeditLocation(previousPreedit);
     }
     void reloadConfig() override {
         const auto previous = *config_.pinyinScheme;
+        const bool previousPreedit = *config_.showPinyinInInput;
         readAsIni(config_, "conf/wetype.conf");
         applyPinyinScheme(previous);
+        applyPreeditLocation(previousPreedit);
     }
     std::string subMode(const InputMethodEntry &,InputContext &ic) override {
         return ic.propertyFor(&modeFactory_)->english?"英文":"中文";
@@ -628,6 +634,12 @@ public:
     }
 
 private:
+    void applyPreeditLocation(bool previous) {
+        if (previous != *config_.showPinyinInInput) {
+            if (auto *ic = icRef_.get()) updateUI(*ic);
+        }
+    }
+
     void applyPinyinScheme(PinyinScheme previous) {
         if (previous == *config_.pinyinScheme) return;
         // 保存未完成的输入，再启动带新方案的会话；Q 会刷新学习数据。
@@ -685,10 +697,20 @@ private:
         normalizePage();
         renderedPageSize_ = pageSize();
         auto &panel = ic.inputPanel();
+        const bool hadClientPreedit = !panel.clientPreedit().empty();
         panel.reset();
         // Frontends may commit preedit on focus-out; include all consumed text.
-        if (pending_) panel.setPreedit(Text(pendingRaw()));
-        else panel.setPreedit(pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy));
+        Text preedit = pending_ ? Text(pendingRaw())
+                                : pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy);
+        const bool inInput = *config_.showPinyinInInput &&
+                             ic.capabilityFlags().test(CapabilityFlag::Preedit) &&
+                             ic.isPreeditEnabled();
+        if (inInput) {
+            preedit.setCursor(static_cast<int>(preedit.textLength()));
+            panel.setClientPreedit(preedit);
+        } else {
+            panel.setPreedit(preedit);
+        }
         if (cands_.empty() && !digitHits_.empty()) {
             // 数字常用语：已输入的数字照常上屏，回车只补全剩余部分。
             panel.setAuxUp(Text("常用语 · 回车补全，Esc 关闭"));
@@ -732,6 +754,7 @@ private:
             cl->setGlobalCursorIndex(selected_ - start);
             panel.setCandidateList(std::move(cl));
         }
+        if (inInput || hadClientPreedit) ic.updatePreedit();
         ic.updateUserInterface(UserInterfaceComponent::InputPanel);
     }
 
