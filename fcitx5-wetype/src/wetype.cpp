@@ -1509,11 +1509,10 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                 cursorEditing_ = true;
                 if (sym == FcitxKey_Left && cursor_ > 0) {
                     --cursor_;
-                    updateUI(*ic);
                 } else if (sym == FcitxKey_Right && cursor_ < static_cast<int>(buf_.size())) {
                     ++cursor_;
-                    updateUI(*ic);
                 }
+                updateUI(*ic);
                 handled = true;
             } else if (candidatesCurrent_ && !cands_.empty()) {
                 const int page = pageSize();

@@ -65,6 +65,8 @@ print('PASS 关闭新配置保留快捷键透传与原方向键选词')
 config(ShowPinyinInInput=True)
 fresh()
 assert int(c.preedits[-1][1]) == 0
+c.press('right')
+assert int(c.preedits[-1][1]) == 6
 c.press('left')
 assert int(c.preedits[-1][1]) == 5
 c.press('esc')
