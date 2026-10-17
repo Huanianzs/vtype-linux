@@ -16,6 +16,8 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(PinyinScheme, N_("全拼"), N_("小鹤双拼"))
 FCITX_CONFIGURATION(WeTypeConfig,
     OptionWithAnnotation<PinyinScheme, PinyinSchemeI18NAnnotation> pinyinScheme{
         this, "PinyinScheme", "拼音方案", PinyinScheme::FullPinyin};
+    Option<bool> showPinyinInInput{
+        this, "ShowPinyinInInput", "在输入框中显示拼音", false};
     Option<bool> alwaysEnglishPunctuation{
         this, "AlwaysEnglishPunctuation", "始终使用英文标点", false};
     Option<bool> arrowKeysMoveCursor{

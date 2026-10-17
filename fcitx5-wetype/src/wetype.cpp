@@ -501,15 +501,19 @@ public:
     void setConfig(const RawConfig &raw) override {
         const auto previousScheme = *config_.pinyinScheme;
         const auto previousFuzzy = config_.fuzzyFlags();
+        const bool previousPreedit = *config_.showPinyinInInput;
         config_.load(raw, true);
         safeSaveAsIni(config_, "conf/wetype.conf");
         applyEngineConfig(previousScheme, previousFuzzy);
+        applyPreeditLocation(previousPreedit);
     }
     void reloadConfig() override {
         const auto previousScheme = *config_.pinyinScheme;
         const auto previousFuzzy = config_.fuzzyFlags();
+        const bool previousPreedit = *config_.showPinyinInInput;
         readAsIni(config_, "conf/wetype.conf");
         applyEngineConfig(previousScheme, previousFuzzy);
+        applyPreeditLocation(previousPreedit);
     }
     std::string subMode(const InputMethodEntry &,InputContext &ic) override {
         return ic.propertyFor(&modeFactory_)->english?"英文":"中文";
@@ -550,6 +554,12 @@ public:
     }
 
 private:
+    void applyPreeditLocation(bool previous) {
+        if (previous != *config_.showPinyinInInput) {
+            if (auto *ic = icRef_.get()) updateUI(*ic);
+        }
+    }
+
     void applyEngineConfig(PinyinScheme previousScheme, uint32_t previousFuzzy) {
         const bool schemeChanged = (previousScheme != *config_.pinyinScheme);
         const bool fuzzyChanged = (previousFuzzy != config_.fuzzyFlags());
@@ -610,10 +620,21 @@ private:
         normalizePage();
         renderedPageSize_ = pageSize();
         auto &panel = ic.inputPanel();
+        const bool hadClientPreedit = !panel.clientPreedit().empty();
         panel.reset();
         // Frontends may commit preedit on focus-out; include all consumed text.
-        if (pending_) panel.setPreedit(Text(pendingRaw()));
-        else panel.setPreedit(pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy, cursor_));
+        Text preedit = pending_ ? Text(pendingRaw())
+                                : pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy, cursor_);
+        const bool inInput = *config_.showPinyinInInput &&
+                             ic.capabilityFlags().test(CapabilityFlag::Preedit) &&
+                             ic.isPreeditEnabled();
+        if (inInput) {
+            // 保留行内编辑的实际光标偏移。
+            if (pending_) preedit.setCursor(static_cast<int>(preedit.textLength()));
+            panel.setClientPreedit(preedit);
+        } else {
+            panel.setPreedit(preedit);
+        }
         if (cands_.empty() && !digitHits_.empty()) {
             // 数字常用语：已输入的数字照常上屏，回车只补全剩余部分。
             panel.setAuxUp(Text("常用语 · 回车补全，Esc 关闭"));
@@ -657,6 +678,7 @@ private:
             cl->setGlobalCursorIndex(selected_ - start);
             panel.setCandidateList(std::move(cl));
         }
+        if (inInput || hadClientPreedit) ic.updatePreedit();
         ic.updateUserInterface(UserInterfaceComponent::InputPanel);
     }
 
