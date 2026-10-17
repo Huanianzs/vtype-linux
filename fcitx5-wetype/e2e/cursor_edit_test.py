@@ -60,3 +60,48 @@ c.press('right')
 raw('nihao')
 config(ReadlineKeyBindings=True, ArrowKeysMoveCursor=True, ShowPinyinInInput=False)
 print('PASS 关闭新配置保留快捷键透传与原方向键选词')
+
+# 连续输入仍锚定起点；结束行内编辑后下一轮恢复锚定。
+config(ShowPinyinInInput=True)
+fresh()
+assert int(c.preedits[-1][1]) == 0
+c.press('left')
+assert int(c.preedits[-1][1]) == 5
+c.press('esc')
+c.type('nihao')
+assert int(c.preedits[-1][1]) == 0
+c.press(0xff09)
+selected = c.candidates[1][1].split(' ', 1)[-1]
+c.press('space')
+assert c.commits == [selected], (c.commits, selected)
+print('PASS 新一轮恢复锚定与 Tab 选词')
+
+# 部分选词后，剩余拼音的光标继续处于有效位置。
+fresh('nihaoshijie')
+seen = set()
+while tuple(c.candidates) not in seen:
+    seen.add(tuple(c.candidates))
+    found = next((i for i, (_, text) in enumerate(c.candidates)
+                  if text.split() in (['你好'], [str(i + 1), '你好'])), None)
+    if found is not None:
+        break
+    c.press('=')
+    c.synchronize_ui()
+else:
+    raise AssertionError('没有找到部分候选你好')
+c.press(str(found + 1))
+pump(.5)
+assert c.commits == ['你好'], c.commits
+c.commits.clear()
+c.press('backspace')
+raw('shiji')
+print('PASS 部分选词后的拼音编辑')
+
+config(PinyinScheme='Flypy')
+fresh('nihc')
+c.press(0xff50)
+c.press('right')
+c.press('a')
+raw('naihc')
+config(PinyinScheme='FullPinyin', ShowPinyinInInput=False)
+print('PASS 小鹤双拼行内插入')

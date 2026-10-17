@@ -250,10 +250,14 @@ consumed = press("4")
 check("live homepage 10->3 refreshes before direct digit handling",
       not consumed and len(ui_candidates) == 3 and not commits)
 
+# 旧方向键选词模式继续验证原来的右键行为。
+value, _ = CTL.GetConfig('fcitx://config/addon/wetype')
+value['ArrowKeysMoveCursor'] = dbus.String('False', variant_level=1)
+CTL.SetConfig('fcitx://config/addon/wetype', dbus.Dictionary(value, signature='sv', variant_level=1))
 set_page_size(10)
 fresh()
 for _ in range(9):
-    press("tab")
+    press("right")
 set_page_size(3)
 before = len(indexes())
 press("space")
@@ -262,6 +266,8 @@ got = indexes()
 check("live shrink clamps selected index before Space",
       len(got) > before and got[-1] == 2 and bool(commits))
 set_page_size(PS)
+value['ArrowKeysMoveCursor'] = dbus.String('True', variant_level=1)
+CTL.SetConfig('fcitx://config/addon/wetype', dbus.Dictionary(value, signature='sv', variant_level=1))
 
 # 自定义翻页键测试 (逗号 / 句号)
 conf_dir = os.path.dirname(os.environ["WETYPE_PAGETEST_CONFIG"])
