@@ -629,8 +629,9 @@ private:
                              ic.capabilityFlags().test(CapabilityFlag::Preedit) &&
                              ic.isPreeditEnabled();
         if (inInput) {
-            // 保留行内编辑的实际光标偏移。
-            if (pending_) preedit.setCursor(static_cast<int>(preedit.textLength()));
+            // 连续输入固定候选框起点；主动行内编辑时显示真实光标。
+            if (!cursorEditing_) preedit.setCursor(0);
+            else if (pending_) preedit.setCursor(static_cast<int>(preedit.textLength()));
             panel.setClientPreedit(preedit);
         } else {
             panel.setPreedit(preedit);
@@ -745,6 +746,7 @@ private:
         ++revision_;
         buf_.clear();
         cursor_ = 0;
+        cursorEditing_ = false;
         cands_.clear();
         covers_.clear();
         candidatesCurrent_ = false;
@@ -1135,6 +1137,7 @@ private:
     EngineProc eng_;
     std::string buf_;
     int cursor_ = 0;
+    bool cursorEditing_ = false;
     WeTypeConfig config_;
     std::unique_ptr<EventSourceTime> restartSource_;
     std::vector<std::string> cands_;
@@ -1238,6 +1241,7 @@ private:
         ++revision_;
         buf_.clear();
         cursor_ = 0;
+        cursorEditing_ = false;
         cands_.clear();
         covers_.clear();
         candidatesCurrent_ = false;
@@ -1297,6 +1301,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             // The pending Space remains an intent after editing the frozen
             // pinyin. Old replies are invalidated by the new revision.
             buf_.pop_back();
+            cursor_ = std::min(cursor_, static_cast<int>(buf_.size()));
             ++revision_;
             candidatesCurrent_ = false;
             cands_.clear();
@@ -1331,16 +1336,19 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                                                 KeyState::Hyper, KeyState::Hyper2,
                                                 KeyState::Mod5})) {
         if (event.key().check(FcitxKey_a, KeyState::Ctrl) || event.key().check(FcitxKey_A, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             cursor_ = 0;
             updateUI(*ic);
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_e, KeyState::Ctrl) || event.key().check(FcitxKey_E, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             cursor_ = static_cast<int>(buf_.size());
             updateUI(*ic);
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_b, KeyState::Ctrl) || event.key().check(FcitxKey_B, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             if (cursor_ > 0) {
                 --cursor_;
                 updateUI(*ic);
@@ -1348,6 +1356,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_f, KeyState::Ctrl) || event.key().check(FcitxKey_F, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             if (cursor_ < static_cast<int>(buf_.size())) {
                 ++cursor_;
                 updateUI(*ic);
@@ -1355,6 +1364,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_d, KeyState::Ctrl) || event.key().check(FcitxKey_D, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             // Forward delete
             if (cursor_ < static_cast<int>(buf_.size())) {
                 buf_.erase(cursor_, 1);
@@ -1377,6 +1387,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_h, KeyState::Ctrl) || event.key().check(FcitxKey_H, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             // Backward delete (Backspace)
             if (cursor_ > 0) {
                 buf_.erase(cursor_ - 1, 1);
@@ -1400,6 +1411,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_k, KeyState::Ctrl) || event.key().check(FcitxKey_K, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             // Delete from cursor to end
             if (cursor_ < static_cast<int>(buf_.size())) {
                 buf_.erase(cursor_);
@@ -1422,6 +1434,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             event.filterAndAccept();
             return;
         } else if (event.key().check(FcitxKey_u, KeyState::Ctrl) || event.key().check(FcitxKey_U, KeyState::Ctrl)) {
+            cursorEditing_ = true;
             // Delete from start to cursor
             if (cursor_ > 0) {
                 buf_.erase(0, cursor_);
@@ -1493,6 +1506,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
         // 方向键左右: 移动拼音光标（默认）或在当前页候选内移动
         else if (!buf_.empty() && (sym == FcitxKey_Left || sym == FcitxKey_Right)) {
             if (*config_.arrowKeysMoveCursor) {
+                cursorEditing_ = true;
                 if (sym == FcitxKey_Left && cursor_ > 0) {
                     --cursor_;
                     updateUI(*ic);
@@ -1535,6 +1549,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
         }
         // Home / End: 移动拼音光标至首尾
         else if (!buf_.empty() && (sym == FcitxKey_Home || sym == FcitxKey_End)) {
+            cursorEditing_ = true;
             if (sym == FcitxKey_Home) {
                 cursor_ = 0;
             } else {
