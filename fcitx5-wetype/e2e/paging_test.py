@@ -12,7 +12,9 @@ PS = int(sys.argv[1])
 LOG = os.environ["WETYPE_PAGETEST_LOG"]
 KEY = {"a": 97, "i": 105, "h": 104, "n": 110, "o": 111, "1": 49, "0": 48,
        "eq": 61, "minus": 45, "esc": 0xFF1B, "down": 0xFF54,
-       "up": 0xFF52, "right": 0xFF53, "space": 32, "4": 52}
+       "up": 0xFF52, "right": 0xFF53, "left": 0xFF51, "tab": 0xFF09,
+       "home": 0xFF50, "end": 0xFF57, "delete": 0xFFFF, "backspace": 0xFF08,
+       "space": 32, "4": 52, "s": 115, "r": 114, "u": 117, "f": 102}
 
 DBusGMainLoop(set_as_default=True)
 bus = dbus.SessionBus()
@@ -65,8 +67,8 @@ def pump(seconds):
         time.sleep(0.02)
 
 
-def press(name):
-    ok = ic.ProcessKeyEvent(dbus.UInt32(KEY[name]), dbus.UInt32(0), dbus.UInt32(0),
+def press(name, state=0):
+    ok = ic.ProcessKeyEvent(dbus.UInt32(KEY[name]), dbus.UInt32(0), dbus.UInt32(state),
                             dbus.Boolean(False),
                             dbus.UInt32(int(time.time() * 1000) & 0xFFFFFFFF))
     pump(0.15)
@@ -78,10 +80,11 @@ def indexes():
         return [int(m) for m in re.findall(r"commit candidate index=(\d+)", f.read())]
 
 
-def candidate_count(offset=0):
+def candidate_count(offset=0, buf_len=5):
     with open(LOG, errors="ignore") as f:
         f.seek(offset)
-        m = re.findall(r"parsed candidates=(\d+) buffer_len=5 preview=0", f.read())
+        pattern = r"parsed candidates=(\d+) buffer_len=%d preview=0" % buf_len
+        m = re.findall(pattern, f.read())
     return int(m[-1]) if m else 0
 
 
@@ -247,6 +250,10 @@ consumed = press("4")
 check("live homepage 10->3 refreshes before direct digit handling",
       not consumed and len(ui_candidates) == 3 and not commits)
 
+# 旧方向键选词模式继续验证原来的右键行为。
+value, _ = CTL.GetConfig('fcitx://config/addon/wetype')
+value['ArrowKeysMoveCursor'] = dbus.String('False', variant_level=1)
+CTL.SetConfig('fcitx://config/addon/wetype', dbus.Dictionary(value, signature='sv', variant_level=1))
 set_page_size(10)
 fresh()
 for _ in range(9):
@@ -259,6 +266,8 @@ got = indexes()
 check("live shrink clamps selected index before Space",
       len(got) > before and got[-1] == 2 and bool(commits))
 set_page_size(PS)
+value['ArrowKeysMoveCursor'] = dbus.String('True', variant_level=1)
+CTL.SetConfig('fcitx://config/addon/wetype', dbus.Dictionary(value, signature='sv', variant_level=1))
 
 # 自定义翻页键测试 (逗号 / 句号)
 conf_dir = os.path.dirname(os.environ["WETYPE_PAGETEST_CONFIG"])
@@ -286,6 +295,62 @@ if os.path.exists(wetype_conf):
     os.remove(wetype_conf)
 CTL.ReloadAddonConfig("wetype")
 pump(0.2)
+
+# 拼音行内光标移动与编辑测试 (shrufa -> 左移 4 次至 h 后 -> 插入 u -> shurufa -> 输入法)
+press("esc")
+commits.clear()
+offset = os.path.getsize(LOG)
+for ch in "shrufa":
+    press(ch)
+for _ in range(4):
+    press("left")
+press("u")
+for _ in range(40):
+    pump(0.2)
+    if candidate_count(offset, 7) >= 1:
+        break
+press("space")
+pump(0.8)
+check("拼音光标左移插入修改 shrufa -> shurufa 并首选上屏",
+      commits and commits[-1] == "输入法",
+      "commit=%s" % (commits[-1] if commits else ""))
+
+# 拼音行内 Delete 键删除测试 (nihao -> 左移 3 次至 i 后 -> Delete 删 h -> niao -> 鸟)
+press("esc")
+commits.clear()
+offset = os.path.getsize(LOG)
+for ch in "nihao":
+    press(ch)
+for _ in range(3):
+    press("left")
+press("delete")
+for _ in range(40):
+    pump(0.2)
+    if candidate_count(offset, 4) >= 1:
+        break
+press("space")
+pump(0.8)
+check("拼音光标 Delete 键删除修改 nihao -> niao 并首选上屏",
+      commits and commits[-1] in ("鸟", "尿"),
+      "commit=%s" % (commits[-1] if commits else ""))
+
+# Readline 快捷键测试 (Ctrl+A 跳至行首 + Delete 删 n -> ihao)
+press("esc")
+commits.clear()
+offset = os.path.getsize(LOG)
+for ch in "nihao":
+    press(ch)
+press("a", state=4)  # Ctrl+A
+press("delete")       # 删掉 'n' -> 'ihao'
+for _ in range(40):
+    pump(0.2)
+    if candidate_count(offset, 4) >= 1:
+        break
+press("space")
+pump(0.8)
+check("Readline Ctrl+A 跳至行首并删除首字母",
+      bool(commits),
+      "commit=%s" % (commits[-1] if commits else ""))
 
 failed = [r for r in results if not r[1]]
 print("SUMMARY page_size=%d total=%d failed=%d" % (PS, len(results), len(failed)), flush=True)

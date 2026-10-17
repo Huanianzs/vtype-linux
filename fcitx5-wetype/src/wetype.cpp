@@ -57,91 +57,12 @@
 #include "harness_log.h"
 #include "punctuation.h"
 #include "config.h"
+#include "pinyin_preedit.h"
 
 namespace fcitx {
 
 static constexpr int FALLBACK_PAGE_SIZE = 5;   // 取不到全局设置时的每页候选数
 static constexpr uint64_t ENGINE_RESTART_DELAY_USEC = 200000;
-
-// Display-only segmentation. The original unsegmented buffer is still sent to
-// the WeType engine, so this never changes composition or candidate matching.
-static std::string segmentPinyin(const std::string &raw) {
-    static const std::unordered_set<std::string> syllables = [] {
-        static const char *data =
-            "a ai an ang ao e ei en eng er o ou "
-            "ba bai ban bang bao bei ben beng bi bian biao bie bin bing bo bu "
-            "pa pai pan pang pao pei pen peng pi pian piao pie pin ping po pou pu "
-            "ma mai man mang mao me mei men meng mi mian miao mie min ming miu mo mou mu "
-            "fa fan fang fei fen feng fo fou fu "
-            "da dai dan dang dao de dei den deng di dia dian diao die ding diu dong dou du duan dui dun duo "
-            "ta tai tan tang tao te teng ti tian tiao tie ting tong tou tu tuan tui tun tuo "
-            "na nai nan nang nao ne nei nen neng ng ni nian niang niao nie nin ning niu nong nou nu nuan nue nuo nv nve "
-            "la lai lan lang lao le lei leng li lia lian liang liao lie lin ling liu long lou lu luan lue lun luo lv "
-            "ga gai gan gang gao ge gei gen geng gong gou gu gua guai guan guang gui gun guo "
-            "ka kai kan kang kao ke kei ken keng kong kou ku kua kuai kuan kuang kui kun kuo "
-            "ha hai han hang hao he hei hen heng hong hou hu hua huai huan huang hui hun huo "
-            "za zai zan zang zao ze zei zen zeng zha zhai zhan zhang zhao zhe zhei zhen zheng zhi zhong zhou zhu zhua zhuai zhuan zhuang zhui zhun zhuo zi zong zou zu zuan zui zun zuo "
-            "ca cai can cang cao ce cen ceng cha chai chan chang chao che chen cheng chi chong chou chu chua chuai chuan chuang chui chun chuo ci cong cou cu cuan cui cun cuo "
-            "sa sai san sang sao se sen seng sha shai shan shang shao she shei shen sheng shi shou shu shua shuai shuan shuang shui shun shuo si song sou su suan sui sun suo "
-            "ra ran rang rao re ren reng ri rong rou ru ruan rui run ruo "
-            "ji jia jian jiang jiao jie jin jing jiong jiu ju juan jue jun "
-            "qi qia qian qiang qiao qie qin qing qiong qiu qu quan que qun "
-            "xi xia xian xiang xiao xie xin xing xiong xiu xu xuan xue xun "
-            "ya yan yang yao ye yi yin ying yo yong you yu yuan yue yun "
-            "wa wai wan wang wei wen weng wo wu "
-            "bo bei ben beng bian bie bin bing "
-            "ge gei gen geng gong gou gua guai guan guang gui gun guo "
-            "jiong juan jue jun";
-        std::unordered_set<std::string> result;
-        std::istringstream input(data);
-        std::string item;
-        while (input >> item) result.insert(item);
-        return result;
-    }();
-
-    std::string out;
-    for (size_t i = 0; i < raw.size();) {
-        if (raw[i] == '\'') {
-            out += raw[i++];
-            continue;
-        }
-        size_t match = 0;
-        const size_t limit = std::min(raw.size(), i + 6);
-        for (size_t end = limit; end > i; --end) {
-            if (raw.find('\'', i) < end) continue;
-            if (syllables.count(raw.substr(i, end - i))) {
-                match = end - i;
-                break;
-            }
-        }
-        if (match) {
-            if (!out.empty() && out.back() != '\'' && out.back() != ' ') out += ' ';
-            out.append(raw, i, match);
-            i += match;
-        } else {
-            if (!out.empty() && out.back() != '\'' && out.back() != ' ') out += ' ';
-            out.append(raw, i, std::string::npos);
-            break;
-        }
-    }
-    return out;
-}
-
-static Text pinyinPreedit(const std::string &buffer, bool doublePin) {
-    Text text;
-    std::string display;
-    if (doublePin) {
-        // 双拼编码每两键一个音节；不按全拼词表切分，也不改动引擎输入。
-        for (size_t i = 0; i < buffer.size(); i += 2) {
-            if (i) display += ' ';
-            display.append(buffer, i, 2);
-        }
-    } else {
-        display = segmentPinyin(buffer);
-    }
-    if (!display.empty()) text.append(display, TextFormatFlag::NoFlag);
-    return text;
-}
 
 struct GridColumnCandidate : public CandidateWord {
     GridColumnCandidate(Text text, std::function<void(InputContext *)> select)
@@ -703,13 +624,14 @@ private:
         panel.reset();
         // Frontends may commit preedit on focus-out; include all consumed text.
         Text preedit = pending_ ? Text(pendingRaw())
-                                : pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy);
+                                : pinyinPreedit(buf_, *config_.pinyinScheme == PinyinScheme::Flypy, cursor_);
         const bool inInput = *config_.showPinyinInInput &&
                              ic.capabilityFlags().test(CapabilityFlag::Preedit) &&
                              ic.isPreeditEnabled();
         if (inInput) {
-            // 与 Rime 相同：预编辑光标放在开头，使候选框锚定本轮输入起点。
-            preedit.setCursor(0);
+            // 连续输入固定候选框起点；主动行内编辑时显示真实光标。
+            if (!cursorEditing_) preedit.setCursor(0);
+            else if (pending_) preedit.setCursor(static_cast<int>(preedit.textLength()));
             panel.setClientPreedit(preedit);
         } else {
             panel.setPreedit(preedit);
@@ -823,6 +745,8 @@ private:
         ic->commitString(text);
         ++revision_;
         buf_.clear();
+        cursor_ = 0;
+        cursorEditing_ = false;
         cands_.clear();
         covers_.clear();
         candidatesCurrent_ = false;
@@ -853,6 +777,8 @@ private:
         ic->commitString(cands_[index]);
         ++revision_;
         buf_.erase(0, cover);
+        cursor_ = std::max(0, cursor_ - cover);
+        cursor_ = std::min(cursor_, static_cast<int>(buf_.size()));
         cands_.clear();
         covers_.clear();
         candidatesCurrent_ = false;
@@ -1210,6 +1136,8 @@ private:
     }
     EngineProc eng_;
     std::string buf_;
+    int cursor_ = 0;
+    bool cursorEditing_ = false;
     WeTypeConfig config_;
     std::unique_ptr<EventSourceTime> restartSource_;
     std::vector<std::string> cands_;
@@ -1312,6 +1240,8 @@ private:
         ++epoch_;
         ++revision_;
         buf_.clear();
+        cursor_ = 0;
+        cursorEditing_ = false;
         cands_.clear();
         covers_.clear();
         candidatesCurrent_ = false;
@@ -1371,6 +1301,7 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             // The pending Space remains an intent after editing the frozen
             // pinyin. Old replies are invalidated by the new revision.
             buf_.pop_back();
+            cursor_ = std::min(cursor_, static_cast<int>(buf_.size()));
             ++revision_;
             candidatesCurrent_ = false;
             cands_.clear();
@@ -1393,6 +1324,137 @@ void WeTypeEngine::processKey(KeyEvent &event) {
             event.filterAndAccept();
             if (queued_.size() >= 256) fallbackPending(ic);
             else updateUI(*ic);
+            return;
+        }
+    }
+
+    // Readline 快捷键 (Ctrl+A/E/B/F/D/H/K/U): 仅在正在输入拼音时生效
+    if (!event.isRelease() && !buf_.empty() && *config_.readlineKeyBindings &&
+        event.key().states().test(KeyState::Ctrl) &&
+        !event.key().states().testAny(KeyStates{KeyState::Alt, KeyState::Super,
+                                                KeyState::Super2, KeyState::Meta,
+                                                KeyState::Hyper, KeyState::Hyper2,
+                                                KeyState::Mod5})) {
+        if (event.key().check(FcitxKey_a, KeyState::Ctrl) || event.key().check(FcitxKey_A, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            cursor_ = 0;
+            updateUI(*ic);
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_e, KeyState::Ctrl) || event.key().check(FcitxKey_E, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            cursor_ = static_cast<int>(buf_.size());
+            updateUI(*ic);
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_b, KeyState::Ctrl) || event.key().check(FcitxKey_B, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            if (cursor_ > 0) {
+                --cursor_;
+                updateUI(*ic);
+            }
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_f, KeyState::Ctrl) || event.key().check(FcitxKey_F, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            if (cursor_ < static_cast<int>(buf_.size())) {
+                ++cursor_;
+                updateUI(*ic);
+            }
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_d, KeyState::Ctrl) || event.key().check(FcitxKey_D, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            // Forward delete
+            if (cursor_ < static_cast<int>(buf_.size())) {
+                buf_.erase(cursor_, 1);
+                ++revision_;
+                candidatesCurrent_ = false;
+                eng_.send("C", nullptr);
+                if (buf_.empty()) {
+                    cursor_ = 0;
+                    cands_.clear();
+                    covers_.clear();
+                    candidatesCurrent_ = false;
+                    windowStart_ = 0;
+                    selected_ = 0;
+                    updateUI(*ic);
+                } else {
+                    requestCandidates(buf_);
+                    updateUI(*ic);
+                }
+            }
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_h, KeyState::Ctrl) || event.key().check(FcitxKey_H, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            // Backward delete (Backspace)
+            if (cursor_ > 0) {
+                buf_.erase(cursor_ - 1, 1);
+                --cursor_;
+                ++revision_;
+                candidatesCurrent_ = false;
+                eng_.send("C", nullptr);
+                if (buf_.empty()) {
+                    cursor_ = 0;
+                    cands_.clear();
+                    covers_.clear();
+                    candidatesCurrent_ = false;
+                    windowStart_ = 0;
+                    selected_ = 0;
+                    updateUI(*ic);
+                } else {
+                    requestCandidates(buf_);
+                    updateUI(*ic);
+                }
+            }
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_k, KeyState::Ctrl) || event.key().check(FcitxKey_K, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            // Delete from cursor to end
+            if (cursor_ < static_cast<int>(buf_.size())) {
+                buf_.erase(cursor_);
+                ++revision_;
+                candidatesCurrent_ = false;
+                eng_.send("C", nullptr);
+                if (buf_.empty()) {
+                    cursor_ = 0;
+                    cands_.clear();
+                    covers_.clear();
+                    candidatesCurrent_ = false;
+                    windowStart_ = 0;
+                    selected_ = 0;
+                    updateUI(*ic);
+                } else {
+                    requestCandidates(buf_);
+                    updateUI(*ic);
+                }
+            }
+            event.filterAndAccept();
+            return;
+        } else if (event.key().check(FcitxKey_u, KeyState::Ctrl) || event.key().check(FcitxKey_U, KeyState::Ctrl)) {
+            cursorEditing_ = true;
+            // Delete from start to cursor
+            if (cursor_ > 0) {
+                buf_.erase(0, cursor_);
+                cursor_ = 0;
+                ++revision_;
+                candidatesCurrent_ = false;
+                eng_.send("C", nullptr);
+                if (buf_.empty()) {
+                    cands_.clear();
+                    covers_.clear();
+                    candidatesCurrent_ = false;
+                    windowStart_ = 0;
+                    selected_ = 0;
+                    updateUI(*ic);
+                } else {
+                    requestCandidates(buf_);
+                    updateUI(*ic);
+                }
+            }
+            event.filterAndAccept();
             return;
         }
     }
@@ -1423,30 +1485,101 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                          : static_cast<char>('A' + (sym - FcitxKey_A));
             ensureEngine();
             ++revision_;
-            buf_ += c;
             candidatesCurrent_ = false;
-            WLOG("typed alpha buffer_len=%zu revision=%llu\n",
-                 buf_.size(), static_cast<unsigned long long>(revision_));
             handled = true;
+            if (cursor_ < static_cast<int>(buf_.size())) {
+                buf_.insert(cursor_, 1, c);
+                ++cursor_;
+                eng_.send("C", nullptr);
+                requestCandidates(buf_);
+            } else {
+                buf_ += c;
+                cursor_ = static_cast<int>(buf_.size());
+                requestCandidates(replayBuffer ? buf_ : std::string(1, c));
+            }
+            WLOG("typed alpha buffer_len=%zu cursor=%d revision=%llu\n",
+                 buf_.size(), cursor_, static_cast<unsigned long long>(revision_));
             // Refresh the preedit immediately while keeping the last
             // candidate page visible until the new engine response arrives.
             updateUI(*ic);
-            requestCandidates(replayBuffer ? buf_ : std::string(1, c));
         }
-        // 方向键左右: 在当前页候选内移动
-        else if (!buf_.empty() && candidatesCurrent_ && !cands_.empty() &&
-                 (sym == FcitxKey_Left || sym == FcitxKey_Right)) {
-            const int page = pageSize();
-            if (sym == FcitxKey_Left && selected_ > windowStart_) {
-                --selected_;
-            } else if (sym == FcitxKey_Right &&
-                       selected_ + 1 < std::min<int>(windowStart_ + page,
-                                                     cands_.size())) {
-                ++selected_;
+        // 方向键左右: 移动拼音光标（默认）或在当前页候选内移动
+        else if (!buf_.empty() && (sym == FcitxKey_Left || sym == FcitxKey_Right)) {
+            if (*config_.arrowKeysMoveCursor) {
+                cursorEditing_ = true;
+                if (sym == FcitxKey_Left && cursor_ > 0) {
+                    --cursor_;
+                } else if (sym == FcitxKey_Right && cursor_ < static_cast<int>(buf_.size())) {
+                    ++cursor_;
+                }
+                updateUI(*ic);
+                handled = true;
+            } else if (candidatesCurrent_ && !cands_.empty()) {
+                const int page = pageSize();
+                if (sym == FcitxKey_Left && selected_ > windowStart_) {
+                    --selected_;
+                } else if (sym == FcitxKey_Right &&
+                           selected_ + 1 < std::min<int>(windowStart_ + page,
+                                                         cands_.size())) {
+                    ++selected_;
+                }
+                updateUI(*ic);
+                handled = true;
+            } else {
+                handled = true;
             }
-            // Composition navigation remains consumed at page boundaries.
+        }
+        // Tab / Shift+Tab: 在当前页候选词之间循环切换选择
+        else if (!buf_.empty() && (sym == FcitxKey_Tab || sym == FcitxKey_ISO_Left_Tab)) {
+            if (candidatesCurrent_ && !cands_.empty()) {
+                const int page = pageSize();
+                const int count = std::min<int>(windowStart_ + page, static_cast<int>(cands_.size())) - windowStart_;
+                if (count > 0) {
+                    const bool backwards = (sym == FcitxKey_ISO_Left_Tab) || event.key().states().test(KeyState::Shift);
+                    if (backwards) {
+                        selected_ = windowStart_ + ((selected_ - windowStart_ - 1 + count) % count);
+                    } else {
+                        selected_ = windowStart_ + ((selected_ - windowStart_ + 1) % count);
+                    }
+                    updateUI(*ic);
+                }
+            }
+            handled = true;
+        }
+        // Home / End: 移动拼音光标至首尾
+        else if (!buf_.empty() && (sym == FcitxKey_Home || sym == FcitxKey_End)) {
+            cursorEditing_ = true;
+            if (sym == FcitxKey_Home) {
+                cursor_ = 0;
+            } else {
+                cursor_ = static_cast<int>(buf_.size());
+            }
             updateUI(*ic);
             handled = true;
+        }
+        // Delete: 删除光标后字符，C 重建 + 前缀重放
+        else if (!buf_.empty() && sym == FcitxKey_Delete) {
+            if (cursor_ < static_cast<int>(buf_.size())) {
+                buf_.erase(cursor_, 1);
+                ++revision_;
+                candidatesCurrent_ = false;
+                handled = true;
+                eng_.send("C", nullptr);
+                if (buf_.empty()) {
+                    cursor_ = 0;
+                    cands_.clear();
+                    covers_.clear();
+                    candidatesCurrent_ = false;
+                    windowStart_ = 0;
+                    selected_ = 0;
+                    updateUI(*ic);
+                } else {
+                    requestCandidates(buf_);
+                    updateUI(*ic);
+                }
+            } else {
+                handled = true;
+            }
         }
         // 翻上一页: 按配置的按键列表 (默认 -、↑、PgUp 等)。组词状态下这些键只用于翻页,
         // 即使已到边界也要吞掉, 否则按键会漏进目标文档 (issue #5)。
@@ -1509,24 +1642,30 @@ void WeTypeEngine::processKey(KeyEvent &event) {
                 handled = true;
             }
         }
-        // 退格: C 重建 + 前缀重放
+        // 退格: 删除光标前字符，C 重建 + 前缀重放
         else if (sym == FcitxKey_BackSpace) {
             if (!buf_.empty()) {
-                buf_.pop_back();
-                ++revision_;
-                candidatesCurrent_ = false;
-                handled = true;
-                eng_.send("C", nullptr);
-                if (buf_.empty()) {
-                    cands_.clear();
-                    covers_.clear();
+                if (cursor_ > 0) {
+                    buf_.erase(cursor_ - 1, 1);
+                    --cursor_;
+                    ++revision_;
                     candidatesCurrent_ = false;
-                    windowStart_ = 0;
-                    selected_ = 0;
-                    updateUI(*ic);
+                    handled = true;
+                    eng_.send("C", nullptr);
+                    if (buf_.empty()) {
+                        cursor_ = 0;
+                        cands_.clear();
+                        covers_.clear();
+                        candidatesCurrent_ = false;
+                        windowStart_ = 0;
+                        selected_ = 0;
+                        updateUI(*ic);
+                    } else {
+                        requestCandidates(buf_);
+                        updateUI(*ic);
+                    }
                 } else {
-                    requestCandidates(buf_);
-                    updateUI(*ic);
+                    handled = true;
                 }
             }
         }

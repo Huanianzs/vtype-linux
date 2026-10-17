@@ -20,6 +20,10 @@ FCITX_CONFIGURATION(WeTypeConfig,
         this, "ShowPinyinInInput", "在输入框中显示拼音", false};
     Option<bool> alwaysEnglishPunctuation{
         this, "AlwaysEnglishPunctuation", "始终使用英文标点", false};
+    Option<bool> arrowKeysMoveCursor{
+        this, "ArrowKeysMoveCursor", "方向键左右移动拼音光标", true};
+    Option<bool> readlineKeyBindings{
+        this, "ReadlineKeyBindings", "启用 Readline 快捷键 (Ctrl+A/E/B/F/D/H/K/U)", true};
     KeyListOption prevPage{
         this, "PrevPage", "上一页",
         {Key(FcitxKey_minus), Key(FcitxKey_KP_Subtract), Key(FcitxKey_Up), Key(FcitxKey_Page_Up)},
