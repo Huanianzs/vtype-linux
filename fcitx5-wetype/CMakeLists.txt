@@ -8,7 +8,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Fcitx5Core REQUIRED)
 
+# 显式指定的包内启动器可能在安装阶段才生成，配置时不能丢弃该路径。
+find_program(WETYPE_PYTHON_EXECUTABLE NAMES python3)
+if(NOT WETYPE_PYTHON_EXECUTABLE)
+    message(FATAL_ERROR "找不到 python3；可用 -DWETYPE_PYTHON_EXECUTABLE=... 指定")
+endif()
+
 add_library(fcitx5-wetype MODULE src/wetype.cpp)
+target_compile_definitions(fcitx5-wetype PRIVATE WETYPE_PYTHON_EXECUTABLE="${WETYPE_PYTHON_EXECUTABLE}")
 target_include_directories(fcitx5-wetype PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../harness ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(fcitx5-wetype PRIVATE Fcitx5::Core)
 
