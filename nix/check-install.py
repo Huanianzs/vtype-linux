@@ -48,7 +48,7 @@ def run(package, apk):
         print('PASS 重复初始化、备份和数据保留', flush=True)
 
         # 合成 enable --timer 的完整配置；不关联设备、不调用网络或真实 systemd。
-        launcher = re.search(r'^exec (\S+)', (package / 'bin/wetype-cloud').read_text(), re.MULTILINE).group(1)
+        launcher = str(package / 'libexec/wetype-python')
         code = """import sys
 from pathlib import Path
 from unittest.mock import patch

@@ -18,9 +18,12 @@ LIBS="libc.so libm.so libdl.so ld-android.so liblog.so libz.so libc++.so"
 BASE="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$BASE/runtime/sysroot}"
 ZIP="${WETYPE_AOSP_IMAGE:-$BASE/.deps/aosp/arm64-v8a-28_r02.zip}"
+IMAGE_DIR="${WETYPE_AOSP_IMAGE_DIR:-}"
 
 export PATH="$PATH:/usr/sbin:/sbin"   # debugfs (e2fsprogs) lives in sbin
-for tool in curl unzip sha256sum dd debugfs; do
+tools=(dd debugfs)
+if [[ -z "$IMAGE_DIR" ]]; then tools+=(curl unzip sha256sum); fi
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
 
@@ -36,7 +39,7 @@ runtime_complete() {
 if runtime_complete; then exit 0; fi
 
 zip_ok() { [[ "$(sha256sum "$1" | cut -d' ' -f1)" == "$IMAGE_SHA256" ]]; }
-if [[ ! -f "$ZIP" ]] || ! zip_ok "$ZIP"; then
+if [[ -z "$IMAGE_DIR" ]] && { [[ ! -f "$ZIP" ]] || ! zip_ok "$ZIP"; }; then
   mkdir -p "$(dirname "$ZIP")"
   echo "Downloading AOSP arm64 system image (407 MB) from $IMAGE_URL"
   curl -fL --retry 3 -o "$ZIP.part" "$IMAGE_URL"
@@ -48,8 +51,12 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/wetype-bionic.XXXXXX")"
 STAGE="$OUT.tmp"
 trap 'rm -rf "$TMP" "$STAGE"' EXIT
 # sparse: most of the 2.6 GB filesystem is empty; keep a small /tmp tmpfs from filling up.
-unzip -p "$ZIP" arm64-v8a/system.img |
-  dd of="$TMP/system.ext4" bs=1M skip="$PART_OFFSET_MIB" iflag=fullblock conv=sparse status=none
+if [[ -n "$IMAGE_DIR" ]]; then
+  dd if="$IMAGE_DIR/system.img" of="$TMP/system.ext4" bs=1M skip="$PART_OFFSET_MIB" iflag=fullblock conv=sparse status=none
+else
+  unzip -p "$ZIP" arm64-v8a/system.img |
+    dd of="$TMP/system.ext4" bs=1M skip="$PART_OFFSET_MIB" iflag=fullblock conv=sparse status=none
+fi
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/system/bin" "$STAGE/system/lib64"
@@ -66,7 +73,11 @@ for lib in $LIBS; do dump "lib64/$lib"; done
 # sections: a "=" rule, "Notices for file(s):", the file paths, a "-" rule, the text.
 # It has no section for linker64, ld-android, libm or libdl; licenses/bionic/ carries
 # those, generated from the matching bionic sources (see licenses/bionic/README).
-unzip -p "$ZIP" arm64-v8a/NOTICE.txt | awk -v libs="$LIBS" '
+image_notice() {
+  if [[ -n "$IMAGE_DIR" ]]; then cat "$IMAGE_DIR/NOTICE.txt";
+  else unzip -p "$ZIP" arm64-v8a/NOTICE.txt; fi
+}
+image_notice | awk -v libs="$LIBS" '
   function flush() {
     if (keep) printf "%s\nNotices for file(s):\n%s%s\n%s", eq, files, dash, body
     keep = 0; files = ""; body = ""

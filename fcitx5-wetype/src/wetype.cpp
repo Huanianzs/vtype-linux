@@ -211,7 +211,7 @@ public:
                 // computes in software on every libc++ call: about 2x slower.
                 setenv("QEMU_CPU", "cortex-a72", 0);
                 if(cloudConfigured_) {
-                    execl("/usr/bin/python3","/usr/bin/python3",(eng+"/cloud_proxy.py").c_str(),
+                    execl(WETYPE_PYTHON_EXECUTABLE,WETYPE_PYTHON_EXECUTABLE,(eng+"/cloud_proxy.py").c_str(),
                         "--config",cloudConfig.c_str(),"--",qemu.c_str(),"-L",sysroot.c_str(),
                         (eng+"/wetype-harness").c_str(),(eng+"/lib/libwxhld_jni.so").c_str(),"--daemon",(char *)nullptr);
                     _exit(127);

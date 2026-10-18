@@ -1,174 +1,151 @@
-{ lib, stdenv, fetchurl, cmake, fcitx5, pkgsStatic, python3, unzip, patchelf, zlib, openssl, snappy, wxc, writeShellScript, e2fsprogs, curl, src }:
+{
+  lib,
+  stdenv,
+  callPackage,
+  androidNdk,
+  cmake,
+  ninja,
+  makeWrapper,
+  makeDesktopItem,
+  copyDesktopItems,
+  fcitx5,
+  qemu-user,
+  python3,
+  bash,
+  coreutils,
+  openssl,
+  snappy,
+  wxc,
+  src,
+}:
 
-let
-  python = python3.withPackages (ps: [ ps.cryptography ps.python-snappy ]);
-  cloudPython = writeShellScript "wetype-cloud-python" ''
-    export PATH="${lib.makeBinPath [ openssl wxc ]}:$PATH"
-    export WETYPE_WXC="''${WETYPE_WXC:-${wxc}/bin/wxc}"
-    export WETYPE_SNAPPY_LIBRARY="${lib.getLib snappy}/lib/libsnappy.so"
-    exec ${python}/bin/python3 "$@"
-  '';
-  version = "0-unstable";
-  ndk = fetchurl {
-    url = "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip";
-    hash = "sha256-WcL23JZ0O12vXRYmaEZAsgpr0rHYWxMVa5AzN0G61cw=";
-  };
-  aospImage = fetchurl {
-    url = "https://dl.google.com/android/repository/sys-img/android/arm64-v8a-28_r02.zip";
-    hash = "sha256-hoRNLt9rp8fxEmH2vj+zd4jJhc/PO4kkz+n1ehzLwKk=";
-  };
-  bionic = stdenv.mkDerivation {
-    pname = "vtype-linux-bionic";
-    version = "android-9";
-    inherit src;
-    nativeBuildInputs = [ unzip e2fsprogs curl ];
-    dontConfigure = true;
-    dontFixup = true;
-    buildPhase = ''
-      runHook preBuild
-      WETYPE_AOSP_IMAGE=${aospImage} bash scripts/prepare_bionic.sh "$PWD/sysroot"
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      cp -a sysroot "$out"
-      runHook postInstall
-    '';
-  };
-  harness = stdenv.mkDerivation {
-    pname = "vtype-linux-harness";
-    inherit version src;
-    nativeBuildInputs = [ unzip patchelf ];
-    dontConfigure = true;
-    # 宿主程序面向 Android/bionic，不能用本机的 strip 和 ELF 修复钩子处理。
-    dontFixup = true;
-    buildPhase = ''
-      runHook preBuild
-      unzip -q ${ndk} 'android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/*'
-      toolchain="$PWD/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64"
-      for tool in clang ld.lld; do
-        patchelf --set-interpreter ${stdenv.cc.bintools.dynamicLinker} \
-          --add-rpath ${lib.makeLibraryPath [ zlib ]} \
-          "$(readlink -f "$toolchain/bin/$tool")"
-      done
-      "$toolchain/bin/clang" --target=aarch64-linux-android28 -O0 -g \
-        -o wetype-harness harness/jinterop.c -ldl
-      "$toolchain/bin/clang" --target=aarch64-linux-android28 -shared -fPIC -O2 \
-        -Wl,-soname,libandroid.so -o libandroid.so shim/libandroid.c
-      "$toolchain/bin/clang" --target=aarch64-linux-android28 -shared -fPIC -O2 -Wall \
-        -o libwetype-cloud.so cloud/cloud_net.c
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      install -Dm755 wetype-harness "$out/libexec/wetype-harness"
-      install -Dm755 libandroid.so "$out/lib/libandroid.so"
-      install -Dm755 libwetype-cloud.so "$out/lib/libwetype-cloud.so"
-      runHook postInstall
-    '';
-  };
-in
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "vtype-linux";
-  inherit version src;
+  version = "0-unstable";
+  inherit src;
 
-  nativeBuildInputs = [ cmake ];
+  strictDeps = true;
+  __structuredAttrs = true;
+  env.PYTHONDONTWRITEBYTECODE = "1";
+
+  nativeBuildInputs = [
+    cmake
+    ninja
+    makeWrapper
+    copyDesktopItems
+  ];
   buildInputs = [ fcitx5 ];
+  nativeCheckInputs = [
+    finalAttrs.passthru.python
+    openssl
+  ];
+
   cmakeDir = "../fcitx5-wetype";
+  cmakeBuildType = "Release";
+  cmakeFlags = [
+    "-DWETYPE_PYTHON_EXECUTABLE=${placeholder "out"}/libexec/wetype-python"
+  ];
+
   doCheck = true;
   checkPhase = ''
     runHook preCheck
+    export WETYPE_SNAPPY_LIBRARY=${lib.getLib snappy}/lib/libsnappy.so
     ctest --output-on-failure
-    (cd .. && ${cloudPython} -m unittest discover -s tests -p 'test_*.py')
-    (cd .. && ${cloudPython} tests/test_snapshot_transport.py)
+    (cd .. && ${finalAttrs.passthru.python}/bin/python3 -m unittest discover -s tests -p 'test_*.py')
+    (cd .. && ${finalAttrs.passthru.python}/bin/python3 tests/test_snapshot_transport.py)
     runHook postCheck
   '';
 
-  postPatch = ''
-    # 上游的云代理入口使用 /usr/bin/python3；NixOS 使用固定的运行时。
-    substituteInPlace fcitx5-wetype/src/wetype.cpp \
-      --replace-fail '"/usr/bin/python3"' '"${cloudPython}"' \
-      --replace-fail '(eng + "/wetype-harness").c_str()' '"${harness}/libexec/wetype-harness"' \
-      --replace-fail '(eng+"/wetype-harness").c_str()' '"${harness}/libexec/wetype-harness"' \
-      --replace-fail 'qemu = eng + "/qemu-aarch64-static";' 'qemu = "${pkgsStatic.qemu-user}/bin/qemu-aarch64";' \
-      --replace-fail 'qemu = "qemu-aarch64-static";' 'qemu = "${pkgsStatic.qemu-user}/bin/qemu-aarch64";' \
-      --replace-fail 'sr : eng + "/sysroot"' 'sr : "${bionic}"'
-  '';
-
   postInstall = ''
-    # profile 安装的插件不在 Fcitx 的默认库目录，使用绝对路径注册。
     substituteInPlace "$out/share/fcitx5/addon/wetype.conf" \
       --replace-fail 'Library=libfcitx5-wetype' "Library=$out/lib/fcitx5/libfcitx5-wetype"
-    mkdir -p "$out/libexec"
-    ln -s ${pkgsStatic.qemu-user}/bin/qemu-aarch64 "$out/libexec/qemu-aarch64-static"
-    ln -s ${harness}/libexec/wetype-harness "$out/libexec/wetype-harness"
-    ln -s ${harness}/lib/libandroid.so "$out/libexec/libandroid.so"
-    ln -s ${harness}/lib/libwetype-cloud.so "$out/libexec/libwetype-cloud.so"
-    ln -s ${bionic} "$out/libexec/sysroot"
+
+    mkdir -p "$out/libexec" "$out/bin" "$out/share/vtype-linux/scripts"
+    ln -s ${qemu-user}/bin/qemu-aarch64 "$out/libexec/qemu-aarch64-static"
+    ln -s ${finalAttrs.passthru.harness}/libexec/wetype-harness "$out/libexec/wetype-harness"
+    ln -s ${finalAttrs.passthru.harness}/lib/libandroid.so "$out/libexec/libandroid.so"
+    ln -s ${finalAttrs.passthru.harness}/lib/libwetype-cloud.so "$out/libexec/libwetype-cloud.so"
+    ln -s ${finalAttrs.passthru.bionic} "$out/libexec/sysroot"
+    ln -s ${wxc}/bin/wxc "$out/bin/wxc"
+
     install -Dm644 ../src/wetype-ime-demo.sh "$out/share/vtype-linux/wetype-ime-demo.sh"
     cp -r ../cloud "$out/share/vtype-linux/cloud"
+    find "$out/share/vtype-linux/cloud" -name __pycache__ -prune -exec rm -rf {} +
+    find "$out/share/vtype-linux/cloud" -name '*.pyc' -delete
+    rm -f "$out/share/vtype-linux/cloud/cloud_net.c"
     install -Dm644 ../scripts/wetype-cloud.py "$out/share/vtype-linux/wetype-cloud.py"
     install -Dm644 ../cloud/实时云桥接.py "$out/libexec/cloud_proxy.py"
-    mkdir -p "$out/share/vtype-linux/scripts"
     for script in fetch_apk.py 17_disable_scan_sig.py 21_fake_appender.py test_bionic_daemon.py; do
       install -m644 "../scripts/$script" "$out/share/vtype-linux/scripts/$script"
     done
     install -m644 ../nix/setup.py "$out/share/vtype-linux/setup.py"
     install -Dm644 ../assets/wetype-ime.png "$out/share/icons/hicolor/256x256/apps/wetype-ime.png"
-    mkdir -p "$out/bin"
-    ln -s ${wxc}/bin/wxc "$out/bin/wxc"
-    cat > "$out/bin/wetype-demo" <<'EOF'
-    #!${stdenv.shell}
-    export WETYPE_ENGINE_DIR="''${WETYPE_ENGINE_DIR:-$HOME/.local/lib/wetype-ime/arm64}"
-    export WETYPE_HARNESS="${harness}/libexec/wetype-harness"
-    export QEMU_AARCH64="''${QEMU_AARCH64:-${pkgsStatic.qemu-user}/bin/qemu-aarch64}"
-    export WETYPE_SYSROOT="''${WETYPE_SYSROOT:-${bionic}}"
-    exec ${stdenv.shell} "@out@/share/vtype-linux/wetype-ime-demo.sh" "$@"
-    EOF
-    cat > "$out/bin/wetype-cloud" <<'EOF'
-    #!${stdenv.shell}
-    exec ${cloudPython} "@out@/share/vtype-linux/wetype-cloud.py" "$@"
-    EOF
-    cat > "$out/bin/wetype-setup" <<'EOF'
-    #!${stdenv.shell}
-    exec ${cloudPython} "@out@/share/vtype-linux/setup.py" --package "@out@" "$@"
-    EOF
-    cat > "$out/bin/wetype-check" <<'EOF'
-    #!${stdenv.shell}
-    exec ${cloudPython} "@out@/share/vtype-linux/scripts/test_bionic_daemon.py" \
-      --engine-dir "''${WETYPE_ENGINE_DIR:-$HOME/.local/lib/wetype-ime/arm64}" \
-      --harness "@out@/libexec/wetype-harness" --qemu "@out@/libexec/qemu-aarch64-static" "$@"
-    EOF
-    chmod +x "$out/bin/"wetype-{demo,cloud,setup,check}
-    substituteInPlace "$out/bin/wetype-demo" --replace-fail '@out@' "$out"
-    substituteInPlace "$out/bin/wetype-cloud" --replace-fail '@out@' "$out"
-    substituteInPlace "$out/bin/wetype-setup" --replace-fail '@out@' "$out"
-    substituteInPlace "$out/bin/wetype-check" --replace-fail '@out@' "$out"
-    mkdir -p "$out/share/applications"
-    cat > "$out/share/applications/wetype-ime.desktop" <<EOF
-    [Desktop Entry]
-    Type=Application
-    Name=VType 初始化
-    Comment=准备微信拼音引擎和词库
-    Exec=$out/bin/wetype-setup
-    Icon=wetype-ime
-    Terminal=true
-    Categories=Utility;
-    EOF
+
+    makeWrapper ${finalAttrs.passthru.python}/bin/python3 "$out/libexec/wetype-python" \
+      --prefix PATH : ${
+        lib.makeBinPath [
+          openssl
+          wxc
+        ]
+      } \
+      --set-default WETYPE_WXC ${wxc}/bin/wxc \
+      --set WETYPE_SNAPPY_LIBRARY ${lib.getLib snappy}/lib/libsnappy.so
+    makeWrapper "$out/libexec/wetype-python" "$out/bin/wetype-cloud" \
+      --add-flags "$out/share/vtype-linux/wetype-cloud.py"
+    makeWrapper "$out/libexec/wetype-python" "$out/bin/wetype-setup" \
+      --add-flags "$out/share/vtype-linux/setup.py --package $out"
+    makeWrapper "$out/libexec/wetype-python" "$out/bin/wetype-check" \
+      --add-flags "$out/share/vtype-linux/scripts/test_bionic_daemon.py" \
+      --add-flags '--engine-dir "''${WETYPE_ENGINE_DIR:-$HOME/.local/lib/wetype-ime/arm64}"' \
+      --add-flags "--harness $out/libexec/wetype-harness --qemu $out/libexec/qemu-aarch64-static"
+    makeWrapper ${bash}/bin/bash "$out/bin/wetype-demo" \
+      --prefix PATH : ${lib.makeBinPath [ coreutils ]} \
+      --add-flags "$out/share/vtype-linux/wetype-ime-demo.sh" \
+      --run 'export WETYPE_ENGINE_DIR="''${WETYPE_ENGINE_DIR:-$HOME/.local/lib/wetype-ime/arm64}"' \
+      --set-default WETYPE_HARNESS ${finalAttrs.passthru.harness}/libexec/wetype-harness \
+      --set-default QEMU_AARCH64 ${qemu-user}/bin/qemu-aarch64 \
+      --set-default WETYPE_SYSROOT ${finalAttrs.passthru.bionic}
   '';
 
+  desktopItems = [
+    (makeDesktopItem {
+      name = "wetype-ime";
+      desktopName = "VType 初始化";
+      comment = "准备微信拼音引擎和词库";
+      exec = "wetype-setup";
+      icon = "wetype-ime";
+      terminal = true;
+      categories = [ "Utility" ];
+    })
+  ];
+
   doInstallCheck = true;
+  nativeInstallCheckInputs = [ finalAttrs.passthru.python ];
   installCheckPhase = ''
     runHook preInstallCheck
-    ${cloudPython} ../nix/check-wxc.py --package "$out" --wxc ${wxc}/bin/wxc
-    ${cloudPython} ../nix/check-runtime.py --package "$out"
+
+    ${finalAttrs.passthru.python}/bin/python3 ../nix/check-wxc.py --package "$out" --wxc ${wxc}/bin/wxc
+    ${finalAttrs.passthru.python}/bin/python3 ../nix/check-runtime.py --package "$out"
+    find "$out" -name __pycache__ -prune -exec rm -rf {} +
+    find "$out" -name '*.pyc' -delete
+
     runHook postInstallCheck
   '';
+
+  passthru = {
+    python = python3.withPackages (ps: [ ps.cryptography ]);
+    bionic = callPackage ./bionic.nix { inherit src; };
+    harness = callPackage ./harness.nix {
+      inherit androidNdk;
+      inherit (finalAttrs) version src;
+    };
+  };
 
   meta = {
     description = "微信拼音 Fcitx5 插件（引擎和词库需另行下载到用户目录）";
     homepage = "https://github.com/zhl-HFUT/vtype-linux";
     license = lib.licenses.gpl3Only;
+    mainProgram = "wetype-setup";
     platforms = [ "x86_64-linux" ];
   };
-}
+})
