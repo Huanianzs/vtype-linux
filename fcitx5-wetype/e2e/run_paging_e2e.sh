@@ -29,6 +29,15 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$T/config/fcitx5" "$T/data/fcitx5/addon" "$T/data/fcitx5/inputmethod" "$T/bus"
+if [ -n "${WETYPE_HARNESS:-}" ] || [ -e "$SRC/../harness/jinterop" ]; then
+  HARNESS_BIN="${WETYPE_HARNESS:-$SRC/../harness/jinterop}"
+  mkdir -p "$T/engine"
+  for f in "$ENGINE_DIR"/*; do
+    [ "$(basename "$f")" != "wetype-harness" ] && ln -s "$f" "$T/engine/"
+  done
+  cp "$HARNESS_BIN" "$T/engine/wetype-harness"
+  ENGINE_DIR="$T/engine"
+fi
 if [ "${WETYPE_PAGETEST_GLOSSARY:-0}" = 1 ]; then
   mkdir -p "$T/data/wetype-ime"
   cp "$HERE/glossary-fixture.tsv" "$T/data/wetype-ime/glossary-en.tsv"

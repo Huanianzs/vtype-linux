@@ -73,11 +73,14 @@ class CloudSetupTest(unittest.TestCase):
         self.assertIn('WETYPE_SNAPPY_LIBRARY=/opt/wetype/lib/libsnappy.so', body)
         self.assertEqual(run.call_count, 2)
 
-    def test_export_keeps_official_key_and_empty_fallback(self):
+    def test_export_keeps_supported_keys_and_skips_unsupported_shortcuts(self):
         from 导出官方常用语 import entries
         rows = p.blob(2, p.blob(2, 'mail') + p.blob(3, 'synthetic@example.invalid'))
         rows += p.blob(2, p.blob(3, '测试常用语'))
-        self.assertEqual(entries(rows), [('mail', 'synthetic@example.invalid'), ('', '测试常用语')])
+        rows += p.blob(2, p.blob(2, '引') + p.blob(3, 'synthetic phrase'))
+        supported, unsupported = entries(rows)
+        self.assertEqual(supported, [('mail', 'synthetic@example.invalid'), ('', '测试常用语')])
+        self.assertEqual(unsupported, 1)
 
 
 if __name__ == '__main__':

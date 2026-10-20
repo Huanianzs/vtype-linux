@@ -221,6 +221,15 @@ run("Destroy / new context", destroy)
 run("IM switch raw fallback", lambda c: raw(c, lambda x: controller.SetCurrentIM("keyboard-us")))
 run("five-second timeout while stopped", timeout)
 def unrelated_release(c):
+    # 对照正常输入的标点输出；排队回放同样应使用当前中文标点设置。
+    c.type("nihao")
+    c.press("space")
+    c.press("!")
+    baseline_commits = list(c.commits)
+    check(baseline_commits == ["你好", "！"], "normal punctuation baseline: %r" % baseline_commits)
+    c.commits.clear()
+    c.events.clear()
+    c.forwarded.clear()
     with paused_engine():
         pending(c)
         c.press("!", delay=0)
@@ -229,9 +238,9 @@ def unrelated_release(c):
         c.press("b", delay=0, release=True)
         c.press("backspace", delay=0)
     settle(3)
-    check(c.commits == ["你好"], "deleted queued b leaked: %r" % c.commits)
-    check(any(e[0] == ord("!") and not e[-1] for e in c.forwarded),
-          "literal ! press lost: %r" % c.forwarded)
+    check(c.commits == baseline_commits, "pending replay differs from normal input: %r" % c.commits)
+    check(not any(e[0] == ord("!") and not e[-1] for e in c.forwarded),
+          "consumed punctuation press was forwarded twice: %r" % c.forwarded)
     check(any(e[0] == ord("!") and e[-1] for e in c.forwarded),
           "unrelated ! release lost: %r" % c.forwarded)
     check(not any(e[0] == ord("b") for e in c.forwarded),

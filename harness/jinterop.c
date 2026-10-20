@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include "dict_table.h"
 #include "pinyin_scheme.h"
+#include "fuzzy_pinyin.h"
 #include <sys/stat.h>
 #include <string.h>
 #include <dlfcn.h>
@@ -952,6 +953,12 @@ static void build_sesscfg_nested(void) {
     obj_set(&g_aug, "enable_skip", 'z', (void *)1);
     const int double_pin_solution = wetype_double_pin_solution(getenv("WETYPE_DOUBLE_PIN"));
     obj_set(&g_aug, "double_pin_solution", 'i', (void *)(long)double_pin_solution);
+    const uint32_t fuzzy_flags = wetype_parse_fuzzy_flags(getenv("WETYPE_FUZZY"));
+    for (size_t i = 0; i < WETYPE_FUZZY_PAIRS_COUNT; i++) {
+        if (fuzzy_flags & WETYPE_FUZZY_PAIRS[i].flag) {
+            obj_set(&g_aug, WETYPE_FUZZY_PAIRS[i].field, 'z', (void *)1);
+        }
+    }
     /* LocalMostLikelyConfig{ emoji/text 相关 true } */
     memset(&g_lml, 0, sizeof g_lml);
     g_lml.cls = "com/tencent/wxhld/info/SessionConfig$LocalMostLikelyConfig";

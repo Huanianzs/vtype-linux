@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -19,8 +18,7 @@ def main():
     args = parser.parse_args()
     package = args.package.resolve()
     expected = args.wxc.resolve()
-    wrapper = (package / 'bin/wetype-cloud').read_text()
-    launcher = re.search(r'^exec (\S+)', wrapper, re.MULTILINE).group(1)
+    launcher = str(package / 'libexec/wetype-python')
 
     class BundledWxcTest(unittest.TestCase):
         def setUp(self):

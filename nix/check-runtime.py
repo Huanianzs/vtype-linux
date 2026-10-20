@@ -10,6 +10,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
 args = parser.parse_args()
 package = args.package.resolve()
+plugin = package / 'lib/fcitx5/libfcitx5-wetype.so'
+assert os.fsencode(package / 'libexec/wetype-python') in plugin.read_bytes(), \
+    '插件没有使用包内 Python 启动器，云代理会丢失包内依赖配置'
 for name in ('wetype-harness', 'libandroid.so', 'libwetype-cloud.so',
              'sysroot/system/bin/linker64', 'sysroot/system/lib64/libc.so',
              'sysroot/system/lib64/libm.so', 'sysroot/system/lib64/libdl.so',

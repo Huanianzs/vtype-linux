@@ -1,8 +1,15 @@
 # Nix / NixOS
 
 提供 x86_64-linux 独立包，包含 Fcitx5 插件、ARM64 Android/bionic 宿主、
-AOSP 运行库、Android 接口替身、云桥接库、静态 QEMU 和 wxc 0.1.0。
+AOSP 运行库、Android 接口替身、云桥接库、QEMU 和 wxc 0.1.0。
 Python、OpenSSL、Snappy 与客户端均使用包内固定路径。
+
+Fcitx5 插件和 ARM64 宿主均从本仓库源码构建，宿主使用 nixpkgs 提供的 Android
+NDK 29 工具链（API 28）。wxc 从固定的上游源码提交构建，依赖使用上游源码中的 `Cargo.lock`，
+使用 nixpkgs 的 OpenSSL 和 Protobuf，不使用 npm 预编译包。
+AOSP 运行库从 nixpkgs 提供的 Android 9 ARM64 系统镜像提取；编译器的 bionic
+链接桩不能作为运行库使用。NDK 和系统镜像由 Nix 以固定哈希下载，构建阶段不运行
+项目脚本去下载。
 
 ## 首次安装
 
@@ -81,14 +88,19 @@ wetype-cloud status
 
 ```sh
 nix develop
-cmake -S fcitx5-wetype -B build
+cmake -S fcitx5-wetype -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure
+python3 -c 'import sys; print(sys.executable)'
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 tests/test_snapshot_transport.py
 python3 scripts/check-public-source.py
 python3 scripts/test_clipboard_desktop.py --backend x11
 ```
+
+`nix develop` 提供编译、QEMU、Snappy 和界面测试所需的工具；CMake 会从
+`PATH` 中查找 `python3`，需要固定解释器时可加
+`-DWETYPE_PYTHON_EXECUTABLE="$(command -v python3)"`。
 
 `nix build` 运行 CTest、离线 Python 测试、包内运行库闭包和命令入口检查。
 真实引擎需要先执行初始化，可运行 `wetype-check --idle-seconds 85`。
